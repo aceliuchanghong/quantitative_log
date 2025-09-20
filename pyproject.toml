@@ -1,0 +1,25 @@
+[project]
+name = "quantitative_log"
+version = "0.1.0"
+description = "quantitative_log"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "akshare>=1.17.54",
+    "backtrader>=1.9.78.123",
+    "duckdb>=1.4.0",
+    "matplotlib>=3.10.6",
+    "openai>=1.65.4",
+    "opencv-python>=4.11.0.86",
+    "pandas>=2.3.1",
+    "paramiko>=4.0.0",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.3",
+    "termcolor>=2.5.0",
+    "tqdm>=4.67.1",
+    "yfinance>=0.2.66",
+]
+
+[tool.setuptools]
+py-modules = []
+

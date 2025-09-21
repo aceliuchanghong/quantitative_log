@@ -37,6 +37,10 @@ def get_trading_days(start_date, end_date):
     return trading_days.dt.strftime("%Y-%m-%d").tolist()
 
 
+# from z_utils.get_proxy import set_proxy
+
+
+# @set_proxy()
 @cache_to_duckdb()
 def get_a_share_stock_list(input_date):
     """
@@ -69,8 +73,8 @@ if __name__ == "__main__":
     """
     start_date = "2025-07-31"
     end_date = "2025-09-30"
-    input_date = "2025-09-21"
-    re_run = False  # True,False
+    input_date = "2025-09-19"
+    re_run = True  # True,False
     trade_date = get_trading_days(start_date, end_date)
     logger.info(colored("%s", "green"), trade_date)
     all_code = get_a_share_stock_list(input_date, _re_run=re_run)
@@ -81,4 +85,3 @@ if __name__ == "__main__":
         break
     for code_row in all_code[["Symbol", "Name"]].values:
         logger.info(colored("%s|%s", "green"), code_row[0], code_row[1])
-        break

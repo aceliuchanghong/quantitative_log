@@ -13,7 +13,7 @@ sys.path.insert(
 from z_utils.logging_config import get_logger
 from z_utils.db_cache import cache_to_duckdb
 from z_utils.get_proxy import set_proxy
-from fix_code_tool import get_ticker
+from tools.fix_code_tool import get_ticker
 
 load_dotenv()
 logger = get_logger(__name__)

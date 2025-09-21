@@ -13,8 +13,8 @@ LOG_FORMAT = (
 )
 LOG_FILE = os.getenv("LOG_FILE")
 
-LOG_MAX_SIZE = int(os.getenv("LOG_MAX_SIZE")) * 1024 * 1024
-LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT"))
+LOG_MAX_SIZE = int(os.getenv("LOG_MAX_SIZE", 1)) * 1024 * 1024  # 默认 1MB，避免未设置
+LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", 50))
 
 
 class NoColorFormatter(logging.Formatter):
@@ -39,22 +39,32 @@ def _setup_logger(name: str = __name__):
 
     # 格式化器
     formatter = logging.Formatter(LOG_FORMAT)
+    no_color_formatter = NoColorFormatter(LOG_FORMAT)
 
-    # 控制台处理器
+    # 控制台处理器（保留颜色）
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)
     console_handler.setFormatter(formatter)
 
-    # 文件处理器
+    # 文件处理器（无颜色，添加 delay=True 延迟打开文件，避免锁定）
     log_dir = os.path.dirname(LOG_FILE)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
     file_handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=LOG_MAX_SIZE, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+        LOG_FILE,
+        maxBytes=LOG_MAX_SIZE,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+        delay=True,  # 延迟打开文件，直到第一次写入
     )
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    file_handler.setFormatter(NoColorFormatter(LOG_FORMAT))
+    file_handler.setFormatter(no_color_formatter)  # 只设置一次，无颜色格式化器
+
+    # 为文件处理器添加错误处理器，忽略轮转失败（继续写入控制台）
+    def error_handler(exc, handler):
+        logger.error(f"日志写入错误: {exc}", exc_info=True)
+
+    file_handler.handleError = error_handler
 
     # 添加处理器
     logger.addHandler(console_handler)

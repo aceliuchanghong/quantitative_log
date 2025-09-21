@@ -178,3 +178,4 @@ marimo.toml
 cache.duckdb
 uv.lock
 logs/
+*.wal

@@ -187,7 +187,7 @@ class DuckDBCacheManager:
                     datetime.now(),
                 ),
             )
-        logger.info(
+        logger.debug(
             colored("函数 %s 执行记录已保存到数据库", "light_yellow"), function_name
         )
 

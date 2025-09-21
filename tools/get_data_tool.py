@@ -19,7 +19,7 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
-@cache_to_duckdb()
+@cache_to_duckdb(db_name="no_git_oic/ak.duckdb")
 def get_intraday_data_ak(symbol, date, period="1", adjust="qfq"):
     """
     获取指定股票在指定日期的分钟级数据
@@ -86,8 +86,8 @@ def get_intraday_data_ak(symbol, date, period="1", adjust="qfq"):
     return df
 
 
-@cache_to_duckdb()
 @set_proxy()
+@cache_to_duckdb(db_name="no_git_oic/yf.duckdb")
 def get_intraday_data_yf(
     stock_code: str, input_date: str, interval: str = "1m"
 ) -> pd.DataFrame:

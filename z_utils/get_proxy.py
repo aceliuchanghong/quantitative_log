@@ -4,10 +4,10 @@ from functools import wraps
 
 def set_proxy(ip: str = "127.0.0.1", port: int = 10808):
     """
-    一个可以设置和清理代理的装饰器工厂函数。
+    设置和清理代理的装饰器工厂
 
     直接使用 @set_proxy() 来应用默认代理，
-    或者使用 @set_proxy(ip="your_ip", port=your_port) 来指定自定义代理。
+    或者使用 @set_proxy(ip="ip", port=port) 来指定自定义代理。
 
     Args:
         ip (str, optional): 代理服务器的 IP 地址。默认为 "127.0.0.1"

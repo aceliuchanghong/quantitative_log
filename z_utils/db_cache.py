@@ -5,12 +5,24 @@ import json
 import pandas as pd
 import functools
 import inspect
-import traceback
+import sys
+from dotenv import load_dotenv
 from io import StringIO
 from pathlib import Path
 from datetime import datetime, date
 from termcolor import colored
 from typing import Any, NamedTuple, Optional, Tuple, Dict
+
+
+sys.path.insert(
+    0,
+    os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../")),
+)
+
+from z_utils.logging_config import get_logger
+
+load_dotenv()
+logger = get_logger(__name__)
 
 # --- 模块1: 序列化与反序列化 ---
 # 所有数据格式转换的逻辑都封装在这里。
@@ -83,7 +95,9 @@ class DuckDBCacheManager:
         try:
             return duckdb.connect(database=self.db_path, read_only=False)
         except Exception as e:
-            print(colored(f"连接DuckDB数据库 {self.db_path} 失败: {e}", "red"))
+            logger.error(
+                colored("%s", "red"), f"连接DuckDB数据库 {self.db_path} 失败: {e}"
+            )
             raise
 
     def _initialize_schema(self):
@@ -131,13 +145,13 @@ class DuckDBCacheManager:
 
         if result:
             if debug:
-                print(colored(f"函数 {function_name} 缓存命中。", "green"))
+                logger.info(colored("%s", "blue"), f"函数 {function_name} 缓存命中。")
             result_data_str, data_count, data_type = result
             deserialized_data = Serializer.deserialize(result_data_str, data_type)
             return CacheResult(data=deserialized_data, count=data_count)
 
         if debug:
-            print(colored(f"函数 {function_name} 缓存未命中。", "yellow"))
+            logger.info(colored("%s", "blue"), f"函数 {function_name} 缓存未命中。")
         return None
 
     def save(
@@ -173,8 +187,9 @@ class DuckDBCacheManager:
                     datetime.now(),
                 ),
             )
-        if debug:
-            print(colored(f"函数 {function_name} 的结果已保存到缓存。", "green"))
+        logger.info(
+            colored("函数 %s 执行记录已保存到数据库", "light_yellow"), function_name
+        )
 
 
 # --- 模块3: 装饰器工厂与辅助函数 ---
@@ -233,7 +248,7 @@ def _prepare_cache_key_and_rerun_flag(
 
 
 def _is_result_empty(result: Any) -> bool:
-    """判断结果是否为空（None, 空DataFrame, 空集合等）。"""
+    """判断结果是否为空, None, 空DataFrame, 空集合等"""
     if result is None:
         return True
     if isinstance(result, pd.DataFrame) and result.empty:
@@ -246,10 +261,12 @@ def _is_result_empty(result: Any) -> bool:
 def create_cache_decorator(is_async: bool):
     """
     装饰器工厂，根据 is_async 参数创建同步或异步的缓存装饰器。
-    这是核心，它将所有模块组合起来。
+    将所有模块组合起来。
     """
 
-    def decorator(db_name="cache.db", default_return=None, debug=False, re_run=False):
+    def decorator(
+        db_name="cache.duckdb", default_return=None, debug=False, re_run=False
+    ):
 
         cache_manager = DuckDBCacheManager(db_name)
 
@@ -269,30 +286,28 @@ def create_cache_decorator(is_async: bool):
                             if cached:
                                 return cached.data
                         elif debug:
-                            print(
-                                colored(
-                                    f"跳过缓存，强制重跑 {name} (原因: {reason})",
-                                    "blue",
-                                )
+                            logger.info(
+                                colored("%s", "blue"),
+                                f"跳过缓存，强制重跑 {name} ({reason})",
                             )
 
                         result = await func(*args, **kwargs)
 
                         if _is_result_empty(result):
                             if debug:
-                                print(colored(f"{name} 返回空结果，不缓存。", "yellow"))
+                                logger.info(
+                                    colored("%s", "blue"),
+                                    f"{name} 返回空结果，不缓存。",
+                                )
                             return result
 
                         cache_manager.save(name, p_hash, result, debug)
                         return result
-                    except Exception:
-                        print(
-                            colored(
-                                f"函数 {func.__name__} 执行失败:\n{traceback.format_exc()}",
-                                "red",
-                            )
+                    except Exception as e:
+                        logger.error(
+                            colored("函数 %s 执行失败: %s", "red"), func.__name__, e
                         )
-                        return default_return
+                        raise
 
                 return async_wrapper
             else:
@@ -310,30 +325,28 @@ def create_cache_decorator(is_async: bool):
                             if cached:
                                 return cached.data
                         elif debug:
-                            print(
-                                colored(
-                                    f"跳过缓存，强制重跑 {name} (原因: {reason})",
-                                    "blue",
-                                )
+                            logger.info(
+                                colored("%s", "blue"),
+                                f"跳过缓存，强制重跑 {name} ({reason})",
                             )
 
                         result = func(*args, **kwargs)
 
                         if _is_result_empty(result):
                             if debug:
-                                print(colored(f"{name} 返回空结果，不缓存。", "yellow"))
+                                logger.info(
+                                    colored("%s", "blue"),
+                                    f"{name} 返回空结果，不缓存。",
+                                )
                             return result
 
                         cache_manager.save(name, p_hash, result, debug)
                         return result
-                    except Exception:
-                        print(
-                            colored(
-                                f"函数 {func.__name__} 执行失败:\n{traceback.format_exc()}",
-                                "red",
-                            )
+                    except Exception as e:
+                        logger.error(
+                            colored("函数 %s 执行失败: %s", "red"), func.__name__, e
                         )
-                        return default_return
+                        raise
 
                 return sync_wrapper
 
@@ -348,10 +361,9 @@ def create_cache_decorator(is_async: bool):
 cache_to_duckdb = create_cache_decorator(is_async=False)
 cache_to_duckdb_async = create_cache_decorator(is_async=True)
 
-
 if __name__ == "__main__":
 
-    @cache_to_duckdb(debug=False)
+    @cache_to_duckdb(debug=True)
     def get_test_data(stock_code, start_date, end_date, adjust="qfq"):
 
         print(f"no cache")
@@ -371,10 +383,6 @@ if __name__ == "__main__":
             "end_date": end_date,
             "adjust": adjust,
         }
-
-    """
-    uv run z_utils/db_cache.py
-    """
 
     stock_code = "603678"
     start_data, end_data = "2025-07-23", "2025-07-23"
@@ -403,6 +411,8 @@ if __name__ == "__main__":
     print(colored(f"{df}", "light_yellow"))
     print(colored(f"{df2}", "light_yellow"))
 
+    # 测试同步
+
     start_time = time.time()
 
     df = asyncio.run(
@@ -424,3 +434,19 @@ if __name__ == "__main__":
     print(colored(f"耗时: {elapsed_time:.2f}秒", "light_yellow"))
     print(colored(f"{df}", "light_yellow"))
     print(colored(f"{df2}", "light_yellow"))
+
+    # 测试错误函数
+    @cache_to_duckdb()
+    def test_error_fun(name: str) -> str:
+        try:
+            names = name + 1
+            return "hello " + names
+        except Exception as e:
+            logger.error(colored("%s", "red"), e)
+            raise
+
+    print(f"{test_error_fun('llch', _re_run=True)}")
+
+    """
+    uv run z_utils/db_cache.py
+    """

@@ -175,6 +175,6 @@ node_modules/
 .vscode/
 __marimo__
 marimo.toml
-cache.db
+cache.duckdb
 uv.lock
 logs/

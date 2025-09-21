@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 
@@ -14,6 +15,16 @@ LOG_FILE = os.getenv("LOG_FILE")
 
 LOG_MAX_SIZE = int(os.getenv("LOG_MAX_SIZE")) * 1024 * 1024
 LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT"))
+
+
+class NoColorFormatter(logging.Formatter):
+    """移除 ANSI 颜色码"""
+
+    ANSI_ESCAPE = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
+
+    def format(self, record):
+        original = super().format(record)
+        return self.ANSI_ESCAPE.sub("", original)
 
 
 def _setup_logger(name: str = __name__):
@@ -43,6 +54,7 @@ def _setup_logger(name: str = __name__):
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
+    file_handler.setFormatter(NoColorFormatter(LOG_FORMAT))
 
     # 添加处理器
     logger.addHandler(console_handler)

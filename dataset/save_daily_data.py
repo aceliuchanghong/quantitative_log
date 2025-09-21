@@ -108,14 +108,22 @@ def run_daily_save(input_date):
             df = fetch_stock_data_for_day(stock_code_str, trade_day)
             if df is not None and not df.empty:
                 logger.info(
-                    colored("%s|%s\n%s", "green"), stock_code_str, trade_day, df.head()
+                    colored("%s|%s\n%s\n", "green"),
+                    stock_code_str,
+                    trade_day,
+                    df.head(2),
                 )
 
 
 if __name__ == "__main__":
     """
-    uv run dataset/save_daily_data.py
+    uv run dataset/save_daily_data.py --date 2025-09-21
     """
-    input_date = "2025-09-21"
-    re_run = False  # True,False
-    run_daily_save(input_date)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Save daily data for a specific date.")
+    parser.add_argument(
+        "--date", type=str, required=True, help="The date in YYYY-MM-DD format"
+    )
+    args = parser.parse_args()
+    run_daily_save(args.date)

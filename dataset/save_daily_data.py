@@ -87,7 +87,7 @@ def run_daily_save(input_date):
 
     for trade_day in trading_days_list:
         for stock_code in all_code:
-            stock_code_str = str(stock_code)
+            stock_code_str = str(stock_code).zfill(6)
             logger.debug(colored("working on:%s|%s", "blue"), stock_code_str, trade_day)
             df = fetch_stock_data_for_day(stock_code_str, trade_day)
             if df is not None and not df.empty:

@@ -74,7 +74,7 @@ if __name__ == "__main__":
     start_date = "2025-07-31"
     end_date = "2025-09-30"
     input_date = "2025-09-19"
-    re_run = True  # True,False
+    re_run = False  # True,False
     trade_date = get_trading_days(start_date, end_date)
     logger.info(colored("%s", "green"), trade_date)
     all_code = get_a_share_stock_list(input_date, _re_run=re_run)
@@ -84,4 +84,4 @@ if __name__ == "__main__":
         logger.info(colored("%s", "green"), code)
         break
     for code_row in all_code[["Symbol", "Name"]].values:
-        logger.info(colored("%s|%s", "green"), code_row[0], code_row[1])
+        logger.info(colored("%s|%s", "green"), str(code_row[0]).zfill(6), code_row[1])

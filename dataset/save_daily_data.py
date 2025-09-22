@@ -106,13 +106,13 @@ def run_daily_save(input_date):
             stock_code_str = str(stock_code).zfill(6)
             logger.debug(colored("working on:%s|%s", "blue"), stock_code_str, trade_day)
             df = fetch_stock_data_for_day(stock_code_str, trade_day)
-            if df is not None and not df.empty:
-                logger.info(
-                    colored("%s|%s\n%s\n", "green"),
-                    stock_code_str,
-                    trade_day,
-                    df.head(2),
-                )
+            # if df is not None and not df.empty:
+            #     logger.info(
+            #         colored("%s|%s\n%s\n", "green"),
+            #         stock_code_str,
+            #         trade_day,
+            #         df.head(2),
+            #     )
 
 
 if __name__ == "__main__":

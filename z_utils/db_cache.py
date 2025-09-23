@@ -6,6 +6,7 @@ import pandas as pd
 import functools
 import inspect
 import sys
+import threading
 from dotenv import load_dotenv
 from io import StringIO
 from pathlib import Path
@@ -88,6 +89,7 @@ class DuckDBCacheManager:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._lock = threading.Lock()
         self._initialize_schema()
 
     def _get_connection(self):
@@ -165,28 +167,28 @@ class DuckDBCacheManager:
         将函数执行结果保存到缓存。
         """
         serialized_data, data_type, data_count = Serializer.serialize(result_data)
-
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO function_cache (function_name, params_hash, result_data, data_count, data_type, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (function_name, params_hash) 
-                DO UPDATE SET
-                    result_data = EXCLUDED.result_data,
-                    data_count = EXCLUDED.data_count,
-                    data_type = EXCLUDED.data_type,
-                    created_at = EXCLUDED.created_at;
-                """,
-                (
-                    function_name,
-                    params_hash,
-                    serialized_data,
-                    data_count,
-                    data_type,
-                    datetime.now(),
-                ),
-            )
+        with self._lock:  # 添加锁
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO function_cache (function_name, params_hash, result_data, data_count, data_type, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (function_name, params_hash) 
+                    DO UPDATE SET
+                        result_data = EXCLUDED.result_data,
+                        data_count = EXCLUDED.data_count,
+                        data_type = EXCLUDED.data_type,
+                        created_at = EXCLUDED.created_at;
+                    """,
+                    (
+                        function_name,
+                        params_hash,
+                        serialized_data,
+                        data_count,
+                        data_type,
+                        datetime.now(),
+                    ),
+                )
         logger.debug(
             colored("函数 %s 执行记录已保存到数据库", "light_yellow"), function_name
         )
@@ -434,6 +436,28 @@ if __name__ == "__main__":
     print(colored(f"耗时: {elapsed_time:.2f}秒", "light_yellow"))
     print(colored(f"{df}", "light_yellow"))
     print(colored(f"{df2}", "light_yellow"))
+
+    # 测试多并发场景
+    @cache_to_duckdb(debug=True, re_run=True)
+    def add(a, b):
+        time.sleep(1)  # 增加 sleep，模拟更长的计算，放大并发冲突概率
+        print(f"Executing add({a}, {b}) in thread {threading.current_thread().name}")
+        return a + b
+
+    def worker(thread_id):
+        try:
+            result = add(1, 2)  # 相同参数，易触发冲突
+            print(f"Thread {thread_id}: result = {result}")
+        except Exception as e:
+            print(f"Thread {thread_id} error: {e}")
+
+    threads = [
+        threading.Thread(target=worker, args=(i,), name=f"T{i}") for i in range(20)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
     # 测试错误函数
     @cache_to_duckdb()

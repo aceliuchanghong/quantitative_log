@@ -188,20 +188,152 @@ $$
 
 
 
+---
+
+对于股票603678,其数据:`file_path = "no_git_oic/SH.603678.csv"`
+```
+数据形状: (38640, 7)
+
+前5行数据:
+               datetime   open   high    low  close  volume     amount
+0  2025-01-02 09:31:00  30.36  30.47  30.13  30.15   674.0  2040503.0
+1  2025-01-02 09:32:00  30.14  30.14  30.01  30.03   491.0  1477167.0
+...
+38638  2025-08-29 14:59:00  40.50  40.50  40.50  40.50     0.0        0.0
+38639  2025-08-29 15:00:00  40.50  40.50  40.50  40.50   887.0  3592350.0
+
+列名: ['datetime', 'open', 'high', 'low', 'close', 'volume', 'amount']
+
+数据类型:
+ datetime     object
+open        float64
+high        float64
+low         float64
+close       float64
+volume      float64
+amount      float64
+dtype: object
+```
+
+我在想对期日内价格极值（高点/低点）的精准滚动预测,[暂时不考虑黑天鹅事件和市场协同驱动]
+
+设计一个**时序感知 + 统计归一化 + 时间结构编码 + 市场协同驱动 + 滚动自更新**的闭环预测系统。
+基于历史分钟级数据，以半日（上午 9:30–11:30，下午 13:00–15:00）为基本预测单元，构建滚动递推预测机制。
+
+首先，对每个半日时段 $ s \in \{ \text{am}, \text{pm} \} $，基于分钟级数据聚合形成原始特征向量：
+
+$$
+\mathbf{x}_t^{(s)} = \left[ \text{OHLCV}, \text{RSI}, \text{MACD}, \sigma_{\text{realized}}, \dots \right]^\top \in \mathbb{R}^{d_0}
+$$
+
+其中包含价格、成交量、技术指标与波动率等，维度为 $ d_0 $。
+
+为进一步提升模型泛化能力，我们**增强输入特征**，构造：
+
+$$
+\mathbf{\tilde{x}}_t^{(s)} = \left[ \mathbf{x}_t^{(s)}; \mathbf{z}_t^{(s)}; \boldsymbol{\tau}_t^{(s)} \right] \in \mathbb{R}^d, \quad d = d_0 + d_0 + d_\tau
+$$
+
+该增强向量由三部分拼接而成：
+
+1. **原始行情与技术特征**：$\mathbf{x}_t^{(s)} \in \mathbb{R}^{d_0}$  
+   → 包含 OHLCV、RSI、MACD、已实现波动率等，维度为 $ d_0 $
+
+2. **标准化后的 z-score 特征**：$\mathbf{z}_t^{(s)} \in \mathbb{R}^{d_0}$  
+   → 与原始特征一一对应，为滚动标准化版本：
+   $$
+   \mathbf{z}_t^{(s)} = \dfrac{ \mathbf{x}_t^{(s)} - \boldsymbol{\mu}_t^{(s)} }{ \boldsymbol{\sigma}_t^{(s)} }
+   $$
+   其中均值与标准差基于最近20个交易日（$t-20$ 至 $t-1$）滚动计算，确保统计稳定性。
+
+3. **时间编码特征**：$\boldsymbol{\tau}_t^{(s)} \in \mathbb{R}^{d_\tau}$  
+   → 引入结构性时间信息，包含：
+   - 星期几（one-hot 编码），
+   - 是否月末前3日（布尔标记），
+   - 是否节假日前/后1日（布尔标记），
+   - 时段标识（am/pm，1维），
+   - 月内交易日序号（模周期编码）等。
+
+因此，增强特征总维度为：
+> $ d = d_0 + d_0 + d_\tau $
+
+为捕捉市场整体动量与行业联动效应，我们进一步引入外部协变量：
+
+$$
+\mathbf{c}_t^{(s)} \in \mathbb{R}^{d_c}
+$$
+
+例如：大盘指数收益率、行业动量因子、关联个股特征、资金流指标等。
+
+最终，模型输入向量为：
+
+$$
+\mathbf{u}_t^{(s)} = \left[ \mathbf{\tilde{x}}_t^{(s)}; \mathbf{c}_t^{(s)} \right] \in \mathbb{R}^{d + d_c}
+$$
+
+预测采用**上午 → 下午 → 滚动更新**的两阶段递推结构，确保信息流与时序一致性。
+
+输入：最近5个交易日（共10个半日）的历史特征序列：
+
+$$
+\mathcal{U}_{t-5:t-1} = \left\{ \mathbf{u}_{t-5}^{\text{am}}, \mathbf{u}_{t-5}^{\text{pm}}, \dots, \mathbf{u}_{t-1}^{\text{am}}, \mathbf{u}_{t-1}^{\text{pm}} \right\}
+$$
+
+输出：预测上午时段极值：
+
+$$
+\hat{y}_t^{\text{am}} = \left( \hat{H}_t^{\text{am}}, \hat{L}_t^{\text{am}} \right) = f_\theta \left( \mathcal{U}_{t-5:t-1} \right)
+$$
+
+在上午预测完成后，将上午时段的真实观测值（或预测值，视策略而定）$\mathbf{u}_t^{\text{am}}$ 加入输入窗口，形成“4.5天 + 0.5天”的滚动序列：
+
+$$
+\mathcal{U}_{t-4.5:t} = \left\{ \mathbf{u}_{t-5}^{\text{pm}}, \mathbf{u}_{t-4}^{\text{am}}, \dots, \mathbf{u}_{t-1}^{\text{pm}}, \mathbf{u}_{t}^{\text{am}} \right\}
+$$
+
+输出：预测下午时段极值：
+
+$$
+\hat{y}_t^{\text{pm}} = \left( \hat{H}_t^{\text{pm}}, \hat{L}_t^{\text{pm}} \right) = f_\theta \left( \mathcal{U}_{t-4.5:t} \right)
+$$
+
+完成 $t$ 日预测后，系统执行以下更新操作，确保下一交易日预测的连续性与适应性：
+
+- **数据更新**：将 $t$ 日下午的真实观测 $\mathbf{u}_t^{\text{pm}}$ 加入历史序列；
+- **统计参数更新**：滑动窗口移除 $t-20$ 日数据，加入 $t$ 日数据，重新计算 $\boldsymbol{\mu}_{t+1}^{(s)}, \boldsymbol{\sigma}_{t+1}^{(s)}$；
+- **时间编码更新**：根据最新日历与交易日历，更新 $\boldsymbol{\tau}_{t+1}^{(s)}$；
+- **窗口前移**：
+  $$
+  \mathcal{U}_{t-4:t} \leftarrow \left( \mathcal{U}_{t-4.5:t} \setminus \{ \mathbf{u}_{t-5}^{\text{am}} \} \right) \cup \{ \mathbf{u}_{t}^{\text{pm}} \}, \quad t \leftarrow t + 1
+  $$
+
+我选择什么模型,或者怎么做呢?
 
 ---
 
+模型选择：LSTM-based Encoder-Decoder（首选）或Transformer（备选）
+   - **为什么LSTM？**
+     - 时序感知强：LSTM擅长处理序列依赖（如前半日影响后半日），并通过门机制（遗忘/输入/输出门）捕捉市场动量和波动聚类。
+     - 适合小样本：您的历史数据约200个交易日（≈400半日），LSTM泛化好，不易过拟合。
+     - 闭环友好：易集成滚动更新，支持在线预测（无需全量重训）。
+     - 输出回归：最后一层全连接（FC）层直接回归H/L，损失函数用MSE（均方误差）或Huber Loss（对异常值鲁棒）。
+     - 扩展性：可加注意力机制（LSTM+Attention）模拟市场协同。
+
+   - **备选：Transformer（如果计算资源充足）**
+     - 优势：自注意力捕捉全局依赖（如跨日联动），并行计算快。适合如果d_c增大（更多外部协变量）。
+     - 缺点：需位置编码（您的τ已部分覆盖），数据少时需Dropout/正则化防过拟合。
+     - 何时选：**如果LSTM验证MAE>2%（价格尺度），切换Transformer。**
 
 
+Rolling Extrema Predictor
 
 ---
 
-
-
-
----
-
-
+- 按交易日滚动,滑动10步预测11
+     - 对于第 `k` 天（`k >= 5`）：用过去5天（10个半日：从 `(k-5)` 天 AM 到 `(k-1)` 天 PM）预测第 `k` 天 AM 的 high 和 low
+     - 然后，加入真实第 `k` 天 AM，形成新窗口（从 `(k-5)` 天 PM 到第 `k` 天 AM，10个半日），预测第 `k` 天 PM 的 high 和 low
+   - 输入 `x`：形状 `(10, feature_dim)`，不包含目标
+   - 目标 `y`：形状 `(2,)`，即 `[high, low]`（浮点）
 
 
 ---

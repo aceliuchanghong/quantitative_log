@@ -7,6 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "akshare>=1.17.54",
     "backtrader>=1.9.78.123",
+    "concurrent-log-handler>=0.9.28",
     "duckdb>=1.4.0",
     "matplotlib>=3.10.6",
     "openai>=1.65.4",

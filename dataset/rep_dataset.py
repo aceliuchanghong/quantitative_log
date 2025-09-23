@@ -1,4 +1,5 @@
 import os
+import glob
 import sys
 from dotenv import load_dotenv
 from termcolor import colored
@@ -28,19 +29,40 @@ class RollingExtremaDataset(Dataset):
         - 目标 `y`：形状 `(2,)`，即 `[high, low]`
     """
 
-    def __init__(self, file_path, window_size=10, feature_cols=None):
+    def __init__(
+        self, file_path, window_size=10, split="all", split_ratio=0.8, feature_cols=None
+    ):
         """
         Args:
             file_path (str): CSV 文件路径
             feature_cols (list): 用于构建特征的列
             window_size (int): 滑动窗口大小（半日数量），必须为偶数
+            split (str): 数据集分割方式，'all' 为全集，'train' 为训练集，'test' 为测试集
+            split_ratio (float): 训练集比例(0 到 1)，默认 0.8
         """
         if window_size % 2 != 0:
             raise ValueError(
                 "window_size must be even to align with full trading days."
             )
 
-        df = pd.read_csv(file_path)
+        if os.path.isdir(file_path):
+            csv_files = sorted(glob.glob(os.path.join(file_path, "*.csv")))
+            if not csv_files:
+                raise ValueError(f"No CSV files found in directory: {file_path}")
+            logger.info(
+                colored(
+                    f"Loading {len(csv_files)} CSV files from directory: {file_path}",
+                    "green",
+                )
+            )
+            dfs = []
+            for f in csv_files:
+                df = pd.read_csv(f)
+                dfs.append(df)
+            df = pd.concat(dfs, ignore_index=True)
+        else:
+            df = pd.read_csv(file_path)
+
         self.feature_cols = feature_cols or [
             "open",
             "high",
@@ -124,6 +146,29 @@ class RollingExtremaDataset(Dataset):
                 self.sample_starts.append(start_pm)
                 self.target_idxs.append(target_pm)
 
+        # 根据 split 参数分割数据集（时间序列顺序分割，避免数据泄漏）
+        total_samples = len(self.sample_starts)
+        if split == "train":
+            end_idx = int(total_samples * split_ratio)
+            self.sample_starts = self.sample_starts[:end_idx]
+            self.target_idxs = self.target_idxs[:end_idx]
+            logger.info(
+                colored(
+                    f"Using train split: {len(self.sample_starts)} samples", "green"
+                )
+            )
+        elif split == "test":
+            start_idx = int(total_samples * split_ratio)
+            self.sample_starts = self.sample_starts[start_idx:]
+            self.target_idxs = self.target_idxs[start_idx:]
+            logger.info(
+                colored(f"Using test split: {len(self.sample_starts)} samples", "green")
+            )
+        elif split != "all":
+            raise ValueError(
+                f"Invalid split: {split}. Must be 'all', 'train' or 'test'."
+            )
+
         # 列索引 for high 和 low
         self.high_idx = self.feature_cols.index("high")
         self.low_idx = self.feature_cols.index("low")
@@ -131,7 +176,7 @@ class RollingExtremaDataset(Dataset):
         logger.info(
             colored(
                 f"Dataset initialized: {len(self.sample_starts)} samples "
-                f"(from {self.num_days} days, window_size={self.window_size})",
+                f"(from {self.num_days} days, window_size={self.window_size}, split={split})",
                 "green",
             )
         )
@@ -164,10 +209,31 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="测试dataset")
-    parser.add_argument("--file_path", type=str, default="no_git_oic/SH.603678.csv")
+    parser.add_argument(
+        "--file_path", type=str, default="no_git_oic/", help="同时支持目录和文件"
+    )
     args = parser.parse_args()
 
     dataset = RollingExtremaDataset(args.file_path)
     x, y = dataset[0]
     logger.info(colored("x.shape:%s", "green"), x.shape)
     logger.info(colored("y:%s", "green"), y)
+
+    # 创建训练集和测试集
+    train_dataset = RollingExtremaDataset(
+        args.file_path, split="train", split_ratio=0.8
+    )
+    test_dataset = RollingExtremaDataset(args.file_path, split="test", split_ratio=0.8)
+
+    # 测试第一个样本
+    if len(train_dataset) > 0:
+        x, y = train_dataset[0]
+        logger.info(colored("Train x.shape: %s", "green"), x.shape)
+        logger.info(colored("Train y: %s", "green"), y)
+        logger.info(colored("Train dataset size: %d", "green"), len(train_dataset))
+
+    if len(test_dataset) > 0:
+        x, y = test_dataset[0]
+        logger.info(colored("Test x.shape: %s", "green"), x.shape)
+        logger.info(colored("Test y: %s", "green"), y)
+        logger.info(colored("Test dataset size: %d", "green"), len(test_dataset))

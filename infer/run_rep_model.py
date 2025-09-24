@@ -12,6 +12,16 @@ sys.path.insert(
 from z_utils.logging_config import get_logger
 from dataset.rep_dataset import RollingExtremaDataset
 from model.rep_lstm_model import LSTMPredictor
+from common.rep_config import (
+    file_path,
+    features,
+    hidden_dim,
+    num_layers,
+    output_dim,
+    dropout,
+    split_ratio,
+    save_model_path,
+)
 
 load_dotenv()
 logger = get_logger(__name__)
@@ -45,18 +55,19 @@ def infer_and_compare(model, test_dataset):
                 break
 
 
-def main():
+def main(
+    file_path,
+    features,
+    hidden_dim,
+    num_layers,
+    output_dim,
+    dropout,
+    split_ratio,
+    model_path,
+):
     """
     主函数：加载模型和数据集，进行推理对比
     """
-    features = 6  # 数据的特征维度
-    hidden_dim = 32
-    num_layers = 2
-    output_dim = 2
-    dropout = 0.1
-    split_ratio = 0.9
-    file_path = "no_git_oic/"
-    model_path = "no_git_oic/models/lstm_predictor.pth"
 
     # 加载测试数据集
     test_dataset = RollingExtremaDataset(
@@ -88,4 +99,13 @@ if __name__ == "__main__":
     """
     uv run infer/run_rep_model.py
     """
-    main()
+    main(
+        file_path,
+        features,
+        hidden_dim,
+        num_layers,
+        output_dim,
+        dropout,
+        split_ratio,
+        save_model_path,
+    )

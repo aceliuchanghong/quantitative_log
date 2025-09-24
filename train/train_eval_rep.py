@@ -17,6 +17,19 @@ sys.path.insert(
 from z_utils.logging_config import get_logger
 from dataset.rep_dataset import RollingExtremaDataset
 from model.rep_lstm_model import LSTMPredictor
+from common.rep_config import (
+    file_path,
+    features,
+    batch_size,
+    num_epochs,
+    hidden_dim,
+    num_layers,
+    output_dim,
+    dropout,
+    learning_rate,
+    split_ratio,
+    save_model_path,
+)
 
 load_dotenv()
 logger = get_logger(__name__)
@@ -95,20 +108,22 @@ def evaluate_model(model, test_loader, criterion):
     return avg_loss
 
 
-def main():
+def main(
+    file_path,
+    features,
+    batch_size,
+    num_epochs,
+    hidden_dim,
+    num_layers,
+    output_dim,
+    dropout,
+    learning_rate,
+    split_ratio,
+    save_model_path,
+):
     """
     主函数：加载数据、训练模型、评估并保存
     """
-    features = 6
-    file_path = "no_git_oic/"
-    batch_size = 4
-    num_epochs = 10
-    hidden_dim = 32
-    num_layers = 2
-    output_dim = 2
-    dropout = 0.1
-    learning_rate = 0.001
-    split_ratio = 0.9
 
     # 加载数据集
     train_dataset = RollingExtremaDataset(
@@ -163,13 +178,27 @@ def main():
     evaluate_model(model, test_loader, criterion)
 
     # 保存模型
-    os.makedirs("no_git_oic/models", exist_ok=True)
-    torch.save(model.state_dict(), "no_git_oic/models/lstm_predictor.pth")
-    logger.info(colored("Model saved to no_git_oic/models", "magenta"))
+    os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
+    torch.save(model.state_dict(), save_model_path)
+    logger.info(
+        colored("Model saved to %s", "magenta"), os.path.dirname(save_model_path)
+    )
 
 
 if __name__ == "__main__":
     """
     uv run train/train_eval_rep.py
     """
-    main()
+    main(
+        file_path,
+        features,
+        batch_size,
+        num_epochs,
+        hidden_dim,
+        num_layers,
+        output_dim,
+        dropout,
+        learning_rate,
+        split_ratio,
+        save_model_path,
+    )

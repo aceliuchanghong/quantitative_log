@@ -553,7 +553,402 @@ if __name__ == "__main__":
 ---
 
 
+## 我在做股票价格极值预测
+### known-info:
+1. `no_git_oic/`目录下面的csv格式,是某一只股票某几年分钟级别交易数据
+```
+               datetime   open   high    low  close  volume     amount
+0  2025-01-02 09:31:00  30.36  30.47  30.13  30.15   674.0  2040503.0
+...
+38639  2025-08-29 15:00:00  40.50  40.50  40.50  40.50   887.0  3592350.0
 
+列名: ['datetime', 'open', 'high', 'low', 'close', 'volume', 'amount']
+
+数据类型:
+ datetime     object
+open        float64
+high        float64
+low         float64
+close       float64
+volume      float64
+amount      float64
+dtype: object
+```
+2. 处理数据的代码:rep_dataset.py
+```python
+class RollingExtremaDataset(Dataset):
+    def __init__(
+        self, file_path, window_size=10, split="all", split_ratio=0.8, feature_cols=None
+    ):
+        if window_size % 2 != 0:
+            raise ValueError(
+                "window_size must be even to align with full trading days."
+            )
+        if os.path.isdir(file_path):
+            csv_files = sorted(glob.glob(os.path.join(file_path, "*.csv")))
+            if not csv_files:
+                raise ValueError(f"No CSV files found in directory: {file_path}")
+            logger.info(
+                colored(
+                    f"Loading {len(csv_files)} CSV files from directory: {file_path}",
+                    "green",
+                )
+            )
+            dfs = []
+            for f in csv_files:
+                df = pd.read_csv(f)
+                dfs.append(df)
+            df = pd.concat(dfs, ignore_index=True)
+        else:
+            df = pd.read_csv(file_path)
+        self.feature_cols = feature_cols or [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "amount",
+        ]
+        required_cols = ["datetime"] + self.feature_cols
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.sort_values("datetime").reset_index(drop=True)
+        df["date"] = df["datetime"].dt.date
+        df["hour"] = df["datetime"].dt.hour
+        df["is_am"] = (df["hour"] >= 9) & (df["hour"] <= 11)
+        df["is_am"] = df["is_am"].fillna(False)
+        df = df[df["is_am"] | ((df["hour"] >= 13) & (df["hour"] <= 15))]
+        half_day_groups = (
+            df.groupby(["date", "is_am"])
+            .agg(
+                {
+                    col: "first" if col == "open" else
+                    "max" if col == "high" else
+                    "min" if col == "low" else
+                    "last" if col == "close" else
+                    "sum"
+                    for col in self.feature_cols
+                }
+            )
+            .reset_index()
+        )
+        half_day_groups = half_day_groups.sort_values(["date", "is_am"]).reset_index(
+            drop=True
+        )
+        self.features = half_day_groups[self.feature_cols].values.astype(np.float32)
+        self.dates = half_day_groups["date"].values
+        self.is_am = half_day_groups["is_am"].values
+        self.num_half_days = len(self.features)
+        if self.num_half_days % 2 != 0:
+            logger.warning("Total half-days is odd; truncating last incomplete day.")
+            self.num_half_days -= 1
+            self.features = self.features[: self.num_half_days]
+            self.dates = self.dates[: self.num_half_days]
+            self.is_am = self.is_am[: self.num_half_days]
+        self.num_days = self.num_half_days // 2
+        self.window_size = window_size
+        self.sample_starts = []
+        self.target_idxs = []
+        min_start_day = window_size // 2
+        for k in range(min_start_day, self.num_days):
+            start_am = (k - window_size // 2) * 2
+            target_am = k * 2
+            if start_am + window_size <= target_am:
+                self.sample_starts.append(start_am)
+                self.target_idxs.append(target_am)
+            start_pm = start_am + 1
+            target_pm = k * 2 + 1
+            if start_pm + window_size <= target_pm:
+                self.sample_starts.append(start_pm)
+                self.target_idxs.append(target_pm)
+        total_samples = len(self.sample_starts)
+        if split == "train":
+            end_idx = int(total_samples * split_ratio)
+            self.sample_starts = self.sample_starts[:end_idx]
+            self.target_idxs = self.target_idxs[:end_idx]
+            logger.info(
+                colored(
+                    f"Using train split: {len(self.sample_starts)} samples", "green"
+                )
+            )
+        elif split == "test":
+            start_idx = int(total_samples * split_ratio)
+            self.sample_starts = self.sample_starts[start_idx:]
+            self.target_idxs = self.target_idxs[start_idx:]
+            logger.info(
+                colored(f"Using test split: {len(self.sample_starts)} samples", "green")
+            )
+        elif split != "all":
+            raise ValueError(
+                f"Invalid split: {split}. Must be 'all', 'train' or 'test'."
+            )
+        self.high_idx = self.feature_cols.index("high")
+        self.low_idx = self.feature_cols.index("low")
+        logger.info(
+            colored(
+                f"Dataset initialized: {len(self.sample_starts)} samples "
+                f"(from {self.num_days} days, window_size={self.window_size}, split={split})",
+                "green",
+            )
+        )
+    def __getitem__(self, idx):
+        start_idx = self.sample_starts[idx]
+        x = self.features[start_idx : start_idx + self.window_size]
+        target_idx = self.target_idxs[idx]
+        y = np.array(
+            [
+                self.features[target_idx, self.high_idx],
+                self.features[target_idx, self.low_idx],
+            ],
+            dtype=np.float32,
+        )
+        return torch.from_numpy(x), torch.from_numpy(y)
+    def __len__(self):
+        return len(self.sample_starts)
+```
+3. rep_lstm_model.py
+```python
+class LSTMPredictor(nn.Module):
+    def __init__(
+        self, input_dim, hidden_dim=64, num_layers=2, output_dim=2, dropout=0.2
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.output_dim = output_dim
+        self.dropout = dropout
+        self.lstm = nn.LSTM(
+            self.input_dim,
+            self.hidden_dim,
+            self.num_layers,
+            dropout=self.dropout,  # 在 LSTM 中，dropout 只在层与层之间应用，不在时间步之间应用
+            batch_first=True,
+        )
+        self.fc = nn.Linear(self.hidden_dim, self.output_dim)
+
+    def forward(self, x):
+        _, (hn, _) = self.lstm(
+            x
+        )  # encoder: 取最后hidden, hn[-1]==>(batch_size, hidden_dim)
+        out = self.fc(hn[-1])  # decoder: 全连接层 FC 回归
+        return out
+```
+4. train_eval_rep.py
+
+```python
+def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    best_loss = float("inf")
+    model.train()
+    for epoch in range(num_epochs):
+        total_loss = 0.0
+        for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
+            optimizer.zero_grad()
+            outputs = model(x_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+
+            # 梯度裁剪，防爆炸
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            optimizer.step()
+            total_loss += loss.item()
+
+            # 每 k batch 打印一个输出样例
+            if batch_idx % 100 == 0:
+                logger.info(
+                    f"Epoch {epoch+1}, Batch {batch_idx}, Output sample: {outputs[0].detach().cpu().numpy()}"
+                )
+
+        avg_loss = total_loss / len(train_loader)
+        scheduler.step(avg_loss)
+        logger.info(
+            colored(
+                f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.4f}", "green"
+            )
+        )
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+        else:
+            logger.info("Loss not improving, consider early stop.")
+
+
+def evaluate_model(model, test_loader, criterion):
+    model.eval()
+    total_loss = 0.0
+    all_preds, all_targets = [], []
+    with torch.no_grad():
+        for batch_idx, (x_batch, y_batch) in enumerate(test_loader):
+            outputs = model(x_batch)
+            loss = criterion(outputs, y_batch)
+            total_loss += loss.item()
+            all_preds.append(outputs.cpu().numpy())
+            all_targets.append(y_batch.cpu().numpy())
+
+            # 打印 batch 的样例
+            if batch_idx % 20 == 0:
+                logger.info(
+                    colored(
+                        f"Batch {batch_idx} Pred: {outputs[0].numpy()}, Target: {y_batch[0].numpy()}",
+                        "blue",
+                    )
+                )
+
+    avg_loss = total_loss / len(test_loader)
+    logger.info(colored(f"Test Avg MSE: {avg_loss:.4f}", "blue"))
+
+    # 合并打印前 5 个预测 vs 实际（表格形式）
+    preds_flat = np.concatenate(all_preds)[:5]
+    targets_flat = np.concatenate(all_targets)[:5]
+    print("Prediction\t\tActual")
+    print("-" * 40)
+    for p, t in zip(preds_flat, targets_flat):
+        print(f"{p[0]:.4f}, {p[1]:.4f}\t\t{t[0]:.4f}, {t[1]:.4f}")
+
+    return avg_loss
+
+
+def main(
+    file_path,
+    features,
+    batch_size,
+    num_epochs,
+    hidden_dim,
+    num_layers,
+    output_dim,
+    dropout,
+    learning_rate,
+    split_ratio,
+    save_model_path,
+):
+    """
+    主函数：加载数据、训练模型、评估并保存
+    """
+
+    # 加载数据集
+    train_dataset = RollingExtremaDataset(
+        file_path, split="train", split_ratio=split_ratio
+    )
+    test_dataset = RollingExtremaDataset(
+        file_path, split="test", split_ratio=split_ratio
+    )
+
+    logger.info(colored(f"Train dataset size: {len(train_dataset)}", "yellow"))
+    logger.info(colored(f"Test dataset size: {len(test_dataset)}", "yellow"))
+
+    sample_x, sample_y = train_dataset[0]
+    logger.info(colored(f"Train x.shape: {sample_x.shape}", "yellow"))
+    logger.info(colored(f"Train y: {sample_y}", "yellow"))
+
+    sample_x_test, sample_y_test = test_dataset[0]
+    logger.info(colored(f"Test x.shape: {sample_x_test.shape}", "yellow"))
+    logger.info(colored(f"Test y: {sample_y_test}", "yellow"))
+
+    for i in range(min(5, len(train_dataset))):
+        x_sample, y_sample = train_dataset[i]
+        msg = (
+            f"Train Sample {i}: x shape={x_sample.shape}, "
+            f"x mean={x_sample.mean():.4f}, x std={x_sample.std():.4f}, y={y_sample}"
+        )
+        logger.debug(colored("%s", "blue"), msg)
+
+    for i in range(min(3, len(test_dataset))):
+        x_sample, y_sample = test_dataset[i]
+        msg = (
+            f"Test Sample {i}: x shape={x_sample.shape}, "
+            f"x mean={x_sample.mean():.4f}, x std={x_sample.std():.4f}, y={y_sample}"
+        )
+        logger.debug(colored("%s", "blue"), msg)
+
+    # 创建 DataLoader
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    # 初始化模型、损失函数和优化器
+    model = LSTMPredictor(features, hidden_dim, num_layers, output_dim, dropout)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    # 训练
+    logger.info(colored("Starting training...", "green"))
+    train_model(model, train_loader, criterion, optimizer, num_epochs)
+
+    # 评估
+    logger.info(colored("Starting evaluation...", "blue"))
+    evaluate_model(model, test_loader, criterion)
+
+    # 保存模型
+    os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
+    torch.save(model.state_dict(), save_model_path)
+    logger.info(
+        colored("Model saved to %s", "magenta"), os.path.dirname(save_model_path)
+    )
+```
+
+5. config.py
+
+```python
+# data
+window_size = 10
+file_path = "no_git_oic/"
+
+# model
+features = 6
+batch_size = 4
+num_epochs = 10
+hidden_dim = 32
+num_layers = 2
+output_dim = 2
+dropout = 0.1
+learning_rate = 0.001
+split_ratio = 0.9
+save_model_path = "no_git_oic/models/lstm_rep_predictor.pth"
+```
+
+### 日志
+
+现在模型可以训练和推理了,简单看一下过程日志
+
+```
+2025-09-24 13:54:18,332 | __main__ | INFO | main:136 | Train dataset size: 1152
+2025-09-24 13:54:18,336 | __main__ | INFO | main:137 | Test dataset size: 128
+2025-09-24 13:54:18,341 | __main__ | INFO | main:140 | Train x.shape: torch.Size([10, 6])
+2025-09-24 13:54:18,365 | __main__ | INFO | main:141 | Train y: tensor([41.2200, 40.8200])
+2025-09-24 13:54:18,367 | __main__ | INFO | main:144 | Test x.shape: torch.Size([10, 6])
+2025-09-24 13:54:18,369 | __main__ | INFO | main:145 | Test y: tensor([35.8500, 35.5300])
+2025-09-24 13:54:18,371 | __main__ | DEBUG | main:153 | Train Sample 0: x shape=torch.Size([10, 6]), x mean=8848693.0000, x std=20331460.0000, y=tensor([41.2200, 40.8200])
+...
+2025-09-24 13:54:19,766 | __main__ | INFO | main:173 | Starting training...
+2025-09-24 13:54:19,831 | __main__ | INFO | train_model:58 | Epoch 1, Batch 0, Output sample: [ 0.14032847 -0.13770314]
+2025-09-24 13:54:20,263 | __main__ | INFO | train_model:58 | Epoch 1, Batch 100, Output sample: [5.2060304 4.1191497]
+2025-09-24 13:54:33,279 | __main__ | INFO | train_model:58 | Epoch 10, Batch 200, Output sample: [30.609327 29.794954]
+2025-09-24 13:54:33,776 | __main__ | INFO | train_model:64 | Epoch [10/10], Avg Loss: 53.7264
+2025-09-24 13:54:33,781 | __main__ | INFO | main:177 | Starting evaluation...
+2025-09-24 13:54:33,792 | __main__ | INFO | evaluate_model:90 | Batch 0 Pred: [30.430801 29.705837], Target: [35.85 35.53]
+2025-09-24 13:54:33,837 | __main__ | INFO | evaluate_model:90 | Batch 20 Pred: [30.430801 29.705837], Target: [38.98 38.26]
+2025-09-24 13:54:33,863 | __main__ | INFO | evaluate_model:98 | Test Avg MSE: 49.9628
+Prediction              Actual
+----------------------------------------
+30.4308, 29.7058                35.8500, 35.5300
+...
+30.4308, 29.7058                35.8800, 35.4500
+```
+
+### 问题
+
+fact:可以看见模型对于不同输入是同一个输出
+训练中轻微波动可能是 dropout 引起的随机性，但评估时 `model.eval()` 关闭 dropout，输出就“冻结”了。
+
+我觉得是不是数据的feature太少了造成的
+对于一个股票lstm预测模型,6个特征太少了,造成所有样本 `x`（序列）内容高度相似,LSTM 的隐藏状态 `hn` 会趋于相同，导致 FC 层输出固定
+
+我希望可以 星期几（one-hot 编码），增加一些其他常用量化指标,日内每个时段的波动率(k分钟)之类的,由于csv数据里只有这个股票分钟级别交易数据.所以需要加工一下.
+还有什么成交量,macd之类的
+
+数据处理的类需要扩展一些函数方法,不要一坨挤在一起
+
+我希望你可以先给出分析,然后给出逐步解决方案,最后给出完整代码
 
 ---
 

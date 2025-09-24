@@ -14,28 +14,17 @@ sys.path.insert(
 )
 
 from z_utils.logging_config import get_logger
+from dataset.rep_feature_engineering import StockFeatureEngineer
 
 load_dotenv()
 logger = get_logger(__name__)
 
 
 class RollingExtremaDataset(Dataset):
-    """
-    ### 按交易日滚动,滑动 window_size 个半日预测下一个半日
-        - 对于第 `k` 天 (k >= window_size//2):
-            - 用过去 window_size 个半日 (从 `(k - window_size//2)` 天 AM 开始) 预测第 `k` 天 AM
-            - 然后滑动一步，加入真实 AM 预测第 `k` 天 PM
-        - 输入 `x`：形状 `(window_size, feature_dim)`
-        - 目标 `y`：形状 `(2,)`，即 `[high, low]`
-    """
-
-    def __init__(
-        self, file_path, window_size=10, split="all", split_ratio=0.8, feature_cols=None
-    ):
+    def __init__(self, file_path, window_size=10, split="all", split_ratio=0.8):
         """
         Args:
-            file_path (str): CSV 文件路径
-            feature_cols (list): 用于构建特征的列
+            file_path (str): CSV 文件路径（或目录）
             window_size (int): 滑动窗口大小（半日数量），必须为偶数
             split (str): 数据集分割方式，'all' 为全集，'train' 为训练集，'test' 为测试集
             split_ratio (float): 训练集比例(0 到 1)，默认 0.8
@@ -45,6 +34,7 @@ class RollingExtremaDataset(Dataset):
                 "window_size must be even to align with full trading days."
             )
 
+        # 加载数据（支持目录或单个文件）
         if os.path.isdir(file_path):
             csv_files = sorted(glob.glob(os.path.join(file_path, "*.csv")))
             if not csv_files:
@@ -63,54 +53,22 @@ class RollingExtremaDataset(Dataset):
         else:
             df = pd.read_csv(file_path)
 
-        self.feature_cols = feature_cols or [
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "amount",
+        # 特征工程：添加指标、时间、价格形态
+        feature_engineer = StockFeatureEngineer()
+        df = feature_engineer.preprocess_features(df)
+
+        # 半日聚合（移入 StockFeatureEngineer）
+        half_day_groups = feature_engineer.aggregate_half_days(df)
+
+        # 归一化（移入 StockFeatureEngineer，仅数值特征）
+        half_day_groups, self.scaler = feature_engineer.normalize_features(
+            half_day_groups
+        )
+
+        # 设置特征列（排除 date, is_am）
+        self.feature_cols = [
+            col for col in half_day_groups.columns if col not in ["date", "is_am"]
         ]
-        required_cols = ["datetime"] + self.feature_cols
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            raise ValueError(f"Missing columns in CSV: {missing_cols}")
-
-        if "high" not in self.feature_cols or "low" not in self.feature_cols:
-            raise ValueError("feature_cols must include 'high' and 'low'")
-
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df = df.sort_values("datetime").reset_index(drop=True)
-
-        # 划分上午/下午：9:30-11:30 为上午，13:00-15:00 为下午
-        df["date"] = df["datetime"].dt.date
-        df["hour"] = df["datetime"].dt.hour
-        df["is_am"] = (df["hour"] >= 9) & (df["hour"] <= 11)
-        df["is_am"] = df["is_am"].fillna(False)
-        df = df[df["is_am"] | ((df["hour"] >= 13) & (df["hour"] <= 15))]
-
-        # 按日期 + 上午/下午分组，聚合每个半日的极值
-        half_day_groups = (
-            df.groupby(["date", "is_am"])
-            .agg(
-                # fmt: off
-                {
-                    col: "first" if col == "open" else
-                    "max" if col == "high" else
-                    "min" if col == "low" else
-                    "last" if col == "close" else
-                    "sum"
-                    for col in self.feature_cols
-                }
-                # fmt: on
-            )
-            .reset_index()
-        )
-
-        half_day_groups = half_day_groups.sort_values(["date", "is_am"]).reset_index(
-            drop=True
-        )
-
         self.features = half_day_groups[self.feature_cols].values.astype(np.float32)
         self.dates = half_day_groups["date"].values
         self.is_am = half_day_groups["is_am"].values
@@ -126,27 +84,27 @@ class RollingExtremaDataset(Dataset):
         self.num_days = self.num_half_days // 2
         self.window_size = window_size
 
-        # 构建滚动样本：每个 k 天 (k >= window_size//2) 生成 AM 和 PM 两个预测样本
+        # 构建滚动样本：匹配目标描述（预测 k 天 AM/PM，滑动加入真实 AM）
         self.sample_starts = []
         self.target_idxs = []
 
-        min_start_day = window_size // 2  # 至少需要这么多天来构成完整窗口
+        min_start_day = window_size // 2  # 至少需要这么多天
         for k in range(min_start_day, self.num_days):
-            # 预测第 k 天 AM：窗口从 (k - window_size//2) 天 AM 开始
+            # 预测第 k 天 AM：从 (k - window_size//2) 天 AM 开始的 window_size 个半日
             start_am = (k - window_size // 2) * 2
             target_am = k * 2  # 第 k 天 AM 索引
-            if start_am + window_size <= target_am:  # 确保不越界
+            if start_am >= 0 and start_am + self.window_size <= target_am:
                 self.sample_starts.append(start_am)
                 self.target_idxs.append(target_am)
 
-            # 预测第 k 天 PM：窗口从 (k - window_size//2) 天 PM 开始（即 start_am + 1）
+            # 预测第 k 天 PM：滑动一步，从 (k - window_size//2 + 0.5) 天（即 start_am +1）开始，加入真实 AM
             start_pm = start_am + 1
             target_pm = k * 2 + 1  # 第 k 天 PM 索引
-            if start_pm + window_size <= target_pm:
+            if start_pm >= 0 and start_pm + self.window_size <= target_pm:
                 self.sample_starts.append(start_pm)
                 self.target_idxs.append(target_pm)
 
-        # 根据 split 参数分割数据集（时间序列顺序分割，避免数据泄漏）
+        # 根据 split 参数分割数据集（时间序列顺序，避免泄漏）
         total_samples = len(self.sample_starts)
         if split == "train":
             end_idx = int(total_samples * split_ratio)
@@ -169,7 +127,9 @@ class RollingExtremaDataset(Dataset):
                 f"Invalid split: {split}. Must be 'all', 'train' or 'test'."
             )
 
-        # 列索引 for high 和 low
+        # high/low 列索引（确保存在）
+        if "high" not in self.feature_cols or "low" not in self.feature_cols:
+            raise ValueError("Features must include 'high' and 'low'")
         self.high_idx = self.feature_cols.index("high")
         self.low_idx = self.feature_cols.index("low")
 
@@ -203,6 +163,12 @@ class RollingExtremaDataset(Dataset):
 if __name__ == "__main__":
     """
     Rolling Extrema Predictor Dataset
+    ### 按交易日滚动,滑动 window_size 个半日预测下一个半日
+        - 对于第 `k` 天 (k >= window_size//2):
+            - 用过去 window_size 个半日 (从 `(k - window_size//2)` 天 AM 开始) 预测第 `k` 天 AM
+            - 然后滑动一步，加入真实 AM 预测第 `k` 天 PM
+        - 输入 `x`：形状 `(window_size, feature_dim)`
+        - 目标 `y`：形状 `(2,)`，即 `[high, low]`
 
     uv run dataset/rep_dataset.py
     """

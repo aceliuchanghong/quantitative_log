@@ -35,9 +35,18 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
-def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
+def train_model(
+    model,
+    train_loader,
+    criterion,
+    optimizer,
+    num_epochs=10,
+    save_model_path=None,
+    patience=5,
+):
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
     best_loss = float("inf")
+    patience_counter = 0
     model.train()
     for epoch in range(num_epochs):
         total_loss = 0.0
@@ -69,8 +78,27 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
 
         if avg_loss < best_loss:
             best_loss = avg_loss
+            patience_counter = 0
+            # 保存最佳模型
+            if save_model_path:
+                os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
+                torch.save(model.state_dict(), save_model_path)
+                logger.info(
+                    colored(
+                        f"Best model saved at epoch {epoch+1} with loss {best_loss:.4f}",
+                        "yellow",
+                    )
+                )
         else:
-            logger.info("Loss not improving, consider early stop.")
+            patience_counter += 1
+            if patience_counter >= patience:
+                logger.info(
+                    colored(
+                        f"Early stopping at epoch {epoch+1} (patience {patience} exceeded)",
+                        "red",
+                    )
+                )
+                break
 
 
 def evaluate_model(model, test_loader, criterion):

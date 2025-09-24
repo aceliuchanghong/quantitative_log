@@ -14,7 +14,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 # linux
 source .venv/bin/activate
 
-uv pip install torch
+uv pip install torch TA-Lib scikit-learn
 
 # 设置代理源
 pip install requests -i https://pypi.tuna.tsinghua.edu.cn/simple

@@ -184,6 +184,7 @@ if __name__ == "__main__":
     x, y = dataset[0]
     logger.info(colored("x.shape:%s", "green"), x.shape)
     logger.info(colored("y:%s", "green"), y)
+    logger.info(colored("num_features = %s", "green"), x.shape[1])
 
     # 创建训练集和测试集
     train_dataset = RollingExtremaDataset(

@@ -338,12 +338,217 @@ Rolling Extrema Predictor
 
 ---
 
+模型似乎有问题,不管什么预测的数据似乎都一样
+```
+2025-09-24 10:34:42,771 | __main__ | INFO | train_model:47 | Epoch 9, Batch 150, Output sample: [42.058865 40.808727]
+2025-09-24 10:34:43,149 | __main__ | INFO | train_model:47 | Epoch 9, Batch 200, Output sample: [43.678802 42.33462 ]
+2025-09-24 10:34:43,529 | __main__ | INFO | train_model:47 | Epoch 9, Batch 250, Output sample: [43.498688 42.1887  ]
+2025-09-24 10:34:43,552 | __main__ | INFO | train_model:53 | Epoch [9/10], Avg Loss: 324.4628
+2025-09-24 10:34:43,555 | __main__ | INFO | train_model:62 | Loss not improving, consider early stop.
+2025-09-24 10:34:43,565 | __main__ | INFO | train_model:47 | Epoch 10, Batch 0, Output sample: [43.642357 42.35166 ]
+...
+2025-09-24 10:34:45,448 | __main__ | INFO | train_model:47 | Epoch 10, Batch 250, Output sample: [43.612827 42.31178 ]
+2025-09-24 10:34:45,470 | __main__ | INFO | train_model:53 | Epoch [10/10], Avg Loss: 327.1415
+2025-09-24 10:34:45,604 | __main__ | INFO | evaluate_model:78 | Batch 21 Pred: [43.9082   42.635834], Target: [38.08 37.21]
+2025-09-24 10:34:45,636 | __main__ | INFO | evaluate_model:78 | Batch 27 Pred: [43.9082   42.635834], Target: [40.99 39.6 ]
+...
+Prediction              Actual
+----------------------------------------
+43.9082, 42.6358                39.9700, 38.6300
+...
+43.9082, 42.6358                40.0900, 37.3800
+```
+
+- model.py
+```python
+class LSTMPredictor(nn.Module):
+    def __init__(
+        self, input_dim, hidden_dim=64, num_layers=2, output_dim=2, dropout=0.2
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.output_dim = output_dim
+        self.dropout = dropout
+        self.lstm = nn.LSTM(
+            self.input_dim,
+            self.hidden_dim,
+            self.num_layers,
+            dropout=self.dropout,  # 在 LSTM 中，dropout 只在层与层之间应用，不在时间步之间应用
+            batch_first=True,
+        )
+        self.fc = nn.Linear(self.hidden_dim, self.output_dim)
+
+    def forward(self, x):
+        _, (hn, _) = self.lstm(
+            x
+        )  # encoder: 取最后hidden, hn[-1]==>(batch_size, hidden_dim)
+        out = self.fc(hn[-1])  # decoder: 全连接层 FC 回归
+        return out
+		
+import os
+import sys
+from dotenv import load_dotenv
+from termcolor import colored
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+import torch.optim as optim
+import numpy as np
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+sys.path.insert(
+    0,
+    os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../")),
+)
+
+from z_utils.logging_config import get_logger
+from dataset.rep_dataset import RollingExtremaDataset
+from model.rep_lstm_model import LSTMPredictor
+
+load_dotenv()
+logger = get_logger(__name__)
 
 
+def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    best_loss = float("inf")
+    model.train()
+    for epoch in range(num_epochs):
+        total_loss = 0.0
+        for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
+            optimizer.zero_grad()
+            outputs = model(x_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+
+            # 梯度裁剪，防爆炸
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            optimizer.step()
+            total_loss += loss.item()
+
+            # 每 k batch 打印一个输出样例
+            if batch_idx % 50 == 0:
+                logger.info(
+                    f"Epoch {epoch+1}, Batch {batch_idx}, Output sample: {outputs[0].detach().cpu().numpy()}"
+                )
+
+        avg_loss = total_loss / len(train_loader)
+        scheduler.step(avg_loss)
+        logger.info(
+            colored(
+                f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.4f}", "green"
+            )
+        )
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+        else:
+            logger.info("Loss not improving, consider early stop.")
+
+
+def evaluate_model(model, test_loader, criterion):
+    model.eval()
+    total_loss = 0.0
+    all_preds, all_targets = [], []
+    with torch.no_grad():
+        for batch_idx, (x_batch, y_batch) in enumerate(test_loader):
+            outputs = model(x_batch)
+            loss = criterion(outputs, y_batch)
+            total_loss += loss.item()
+            all_preds.append(outputs.cpu().numpy())
+            all_targets.append(y_batch.cpu().numpy())
+
+            # 打印每个 batch 的第一个样例
+            logger.info(
+                colored(
+                    f"Batch {batch_idx} Pred: {outputs[0].numpy()}, Target: {y_batch[0].numpy()}",
+                    "blue",
+                )
+            )
+
+    avg_loss = total_loss / len(test_loader)
+    logger.info(colored(f"Test Avg MSE: {avg_loss:.4f}", "blue"))
+
+    # 合并打印前 5 个预测 vs 实际（表格形式）
+    preds_flat = np.concatenate(all_preds)[:5]
+    targets_flat = np.concatenate(all_targets)[:5]
+    print("Prediction\t\tActual")
+    print("-" * 40)
+    for p, t in zip(preds_flat, targets_flat):
+        print(f"{p[0]:.4f}, {p[1]:.4f}\t\t{t[0]:.4f}, {t[1]:.4f}")
+
+    return avg_loss
+
+
+def main():
+    """
+    主函数：加载数据、训练模型、评估并保存
+    """
+    features = 6
+    file_path = "no_git_oic/"
+    batch_size = 4
+    num_epochs = 10
+    hidden_dim = 64
+    num_layers = 2
+    output_dim = 2
+    dropout = 0.2
+    learning_rate = 0.003
+    split_ratio = 0.9
+
+    # 加载数据集
+    train_dataset = RollingExtremaDataset(
+        file_path, split="train", split_ratio=split_ratio
+    )
+    test_dataset = RollingExtremaDataset(
+        file_path, split="test", split_ratio=split_ratio
+    )
+
+    logger.info(colored(f"Train dataset size: {len(train_dataset)}", "yellow"))
+    logger.info(colored(f"Test dataset size: {len(test_dataset)}", "yellow"))
+
+    sample_x, sample_y = train_dataset[0]
+    logger.info(colored(f"Train x.shape: {sample_x.shape}", "yellow"))
+    logger.info(colored(f"Train y: {sample_y}", "yellow"))
+
+    sample_x_test, sample_y_test = test_dataset[0]
+    logger.info(colored(f"Test x.shape: {sample_x_test.shape}", "yellow"))
+    logger.info(colored(f"Test y: {sample_y_test}", "yellow"))
+
+    # 创建 DataLoader
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    # 初始化模型、损失函数和优化器
+    model = LSTMPredictor(features, hidden_dim, num_layers, output_dim, dropout)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    # 训练
+    logger.info(colored("Starting training...", "green"))
+    train_model(model, train_loader, criterion, optimizer, num_epochs)
+
+    # 评估
+    logger.info(colored("Starting evaluation...", "blue"))
+    evaluate_model(model, test_loader, criterion)
+
+    # 保存模型
+    os.makedirs("no_git_oic/models", exist_ok=True)
+    torch.save(model.state_dict(), "no_git_oic/models/lstm_predictor.pth")
+    logger.info(colored("Model saved to no_git_oic/models", "magenta"))
+
+
+if __name__ == "__main__":
+    main()
+```
 
 ---
 
-
+- 如果 `RollingExtremaDataset` 生成的所有样本 `x`（序列）内容高度相似（例如，所有滚动窗口的极值数据恒定，或数据文件本身是常量/低方差），LSTM 的隐藏状态 `hn` 会趋于相同，导致 FC 层输出固定。
+- 训练中轻微波动可能是 dropout 引起的随机性，但评估时 `model.eval()` 关闭 dropout，输出就“冻结”了。
+- 证据：评估中不同 Batch 的 Target 变化（38.08/37.21 → 40.99/39.6），但 Pred 固定；Loss 高但不降，暗示输入无信息。
 
 ---
 

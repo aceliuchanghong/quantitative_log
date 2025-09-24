@@ -3,8 +3,8 @@ import sys
 from dotenv import load_dotenv
 from termcolor import colored
 import torch
-from torch.utils.data import DataLoader
 import torch.nn as nn
+from torch.utils.data import DataLoader
 
 sys.path.insert(
     0,
@@ -19,15 +19,28 @@ logger = get_logger(__name__)
 
 
 class LSTMPredictor(nn.Module):
-    def __init__(self, input_dim, hidden_dim=64, num_layers=2, output_dim=2):
+    def __init__(
+        self, input_dim, hidden_dim=64, num_layers=2, output_dim=2, dropout=0.2
+    ):
         super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.output_dim = output_dim
+        self.dropout = dropout
         self.lstm = nn.LSTM(
-            input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2
+            self.input_dim,
+            self.hidden_dim,
+            self.num_layers,
+            dropout=self.dropout,  # 在 LSTM 中，dropout 只在层与层之间应用，不在时间步之间应用
+            batch_first=True,
         )
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.fc = nn.Linear(self.hidden_dim, self.output_dim)
 
     def forward(self, x):
-        _, (hn, _) = self.lstm(x)  # encoder: 取最后hidden
+        _, (hn, _) = self.lstm(
+            x
+        )  # encoder: 取最后hidden, hn[-1]==>(batch_size, hidden_dim)
         out = self.fc(hn[-1])  # decoder: 全连接层 FC 回归
         return out
 

@@ -957,7 +957,491 @@ fact:可以看见模型对于不同输入是同一个输出
 ---
 
 
+## 我在做股票价格极值预测
+### known-info:
+1. `no_git_oic/`目录下面的csv格式,是某一只股票分钟级别交易数据
 
+```csv
+datetime,open,high,low,close,volume,amount
+2024-01-02 09:31:00,26.5,26.73,26.5,26.6,748.0,1987564.0
+2024-01-02 09:32:00,26.61,26.64,26.58,26.61,199.0,529549.0
+...
+2024-12-31 14:56:00,30.5,30.54,30.46,30.5,297.0,906001.0
+2024-12-31 14:57:00,30.51,30.53,30.5,30.51,269.0,820930.0
+```
+
+2. rep_feature_engineering
+
+```python
+class StockFeatureEngineer:
+    def __init__(self):
+        self.feature_names = []
+    def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df["returns"] = df["close"].pct_change()
+        df["log_returns"] = np.log(df["close"] / df["close"].shift(1))
+        for period in [5, 10, 20, 30, 60]:
+            df[f"ma_{period}"] = df["close"].rolling(window=period).mean()
+            df[f"close_ma_{period}_ratio"] = df["close"] / df[f"ma_{period}"]
+        macd, macd_signal, macd_hist = talib.MACD(df["close"])
+        df["macd"] = macd
+        df["macd_signal"] = macd_signal
+        df["macd_hist"] = macd_hist
+        df["rsi"] = talib.RSI(df["close"], timeperiod=14)
+        bb_upper, bb_middle, bb_lower = talib.BBANDS(df["close"])
+        df["bb_upper"] = bb_upper
+        df["bb_lower"] = bb_lower
+        df["bb_middle"] = bb_middle
+        df["bb_width"] = (bb_upper - bb_lower) / bb_middle
+        df["bb_position"] = (df["close"] - bb_lower) / (bb_upper - bb_lower)
+        k, d = talib.STOCH(
+            df["high"],
+            df["low"],
+            df["close"],
+            fastk_period=9,
+            slowk_period=3,
+            slowd_period=3,
+        )
+        df["k"] = k
+        df["d"] = d
+        df["j"] = 3 * df["k"] - 2 * df["d"]
+        for period in [5, 10, 20]:
+            df[f"return_vol_{period}"] = df["returns"].rolling(window=period).std()
+            df[f"high_low_vol_{period}"] = (
+                ((df["high"] - df["low"]) / df["close"]).rolling(window=period).std()
+            )
+        df["volume_ma"] = df["volume"].rolling(window=20).mean()
+        df["volume_ratio"] = df["volume"] / df["volume_ma"]
+        df["volume_change"] = df["volume"].pct_change()
+        for period in [5, 10, 20]:
+            df[f"momentum_{period}"] = df["close"] / df["close"].shift(period)
+            df[f"roc_{period}"] = talib.ROC(df["close"], timeperiod=period)
+        for period in [5, 10, 20]:
+            df[f"high_{period}"] = df["high"].rolling(window=period).max()
+            df[f"low_{period}"] = df["low"].rolling(window=period).min()
+            df[f"high_low_range_{period}"] = (
+                df[f"high_{period}"] - df[f"low_{period}"]
+            ) / df["close"]
+        df["adx"] = talib.ADX(df["high"], df["low"], df["close"], timeperiod=14)
+        df["atr"] = talib.ATR(df["high"], df["low"], df["close"], timeperiod=14)
+        df["atr_ratio"] = df["atr"] / df["close"]
+        df["cci"] = talib.CCI(df["high"], df["low"], df["close"], timeperiod=14)
+        df = df.bfill().ffill()
+        return df
+    def add_time_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df["hour"] = df["datetime"].dt.hour
+        df["minute"] = df["datetime"].dt.minute
+        df["day_of_week"] = df["datetime"].dt.dayofweek
+        df["month"] = df["datetime"].dt.month
+        df["quarter"] = df["datetime"].dt.quarter
+        df["day_of_year"] = df["datetime"].dt.dayofyear
+        df["is_morning_rush"] = ((df["hour"] == 9) & (df["minute"] <= 30)).astype(int)
+        df["is_lunch_break"] = ((df["hour"] == 11) & (df["minute"] >= 30)).astype(int)
+        df["is_afternoon_active"] = ((df["hour"] == 14) & (df["minute"] <= 30)).astype(
+            int
+        )
+        for i in range(5):
+            df[f"day_{i}"] = (df["day_of_week"] == i).astype(int)
+        for i in range(1, 13):
+            df[f"month_{i}"] = (df["month"] == i).astype(int)
+        return df
+    def add_price_patterns(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df["high_open_ratio"] = df["high"] / df["open"]
+        df["low_open_ratio"] = df["low"] / df["open"]
+        df["close_open_ratio"] = df["close"] / df["open"]
+        df["body_size"] = abs(df["close"] - df["open"]) / (
+            df["high"] - df["low"] + 1e-8
+        )
+        df["upper_shadow"] = (df["high"] - np.maximum(df["open"], df["close"])) / (
+            df["high"] - df["low"] + 1e-8
+        )
+        df["lower_shadow"] = (np.minimum(df["open"], df["close"]) - df["low"]) / (
+            df["high"] - df["low"] + 1e-8
+        )
+        df["price_position"] = (df["close"] - df["low"]) / (
+            df["high"] - df["low"] + 1e-8
+        )
+        return df
+    def aggregate_half_days(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df["date"] = df["datetime"].dt.date
+        df["hour"] = df["datetime"].dt.hour
+        df["is_am"] = ((df["hour"] >= 9) & (df["hour"] <= 11)).astype(bool)
+        df = df[df["is_am"] | ((df["hour"] >= 13) & (df["hour"] <= 15))]
+        agg_dict = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+            "amount": "sum",
+        }
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if col not in agg_dict:
+                agg_dict[col] = "mean"
+        half_day_groups = df.groupby(["date", "is_am"]).agg(agg_dict).reset_index()
+        half_day_groups["date"] = pd.to_datetime(half_day_groups["date"])
+        half_day_groups = half_day_groups.sort_values(["date", "is_am"]).reset_index(
+            drop=True
+        )
+        numeric_cols_agg = [
+            col for col in half_day_groups.columns if col not in ["date", "is_am"]
+        ]
+        half_day_groups[numeric_cols_agg] = (
+            half_day_groups[numeric_cols_agg].bfill().ffill()
+        )
+        for col in numeric_cols_agg:
+            half_day_groups[col] = half_day_groups[col].fillna(
+                half_day_groups[col].median()
+            )
+        return half_day_groups
+    def normalize_features(
+        self, df: pd.DataFrame, exclude_cols: list = None
+    ) -> tuple[pd.DataFrame, StandardScaler]:
+        df = df.copy()
+        if exclude_cols is None:
+            exclude_cols = ["date", "is_am", "datetime"]
+        feature_cols = [
+            col
+            for col in df.columns
+            if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col])
+        ]
+        if not feature_cols:
+            raise ValueError("No numeric feature columns found for normalization.")
+        for col in feature_cols:
+            df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+            df[col] = df[col].clip(lower=-1e6, upper=1e6)
+            df[col] = df[col].fillna(df[col].median())
+        inf_count = np.isinf(df[feature_cols].values).sum()
+        if inf_count > 0:
+            logger.warning(
+                f"Still found {inf_count} inf values after cleaning; check data."
+            )
+        scaler = StandardScaler()
+        df[feature_cols] = scaler.fit_transform(df[feature_cols])
+        return df, scaler
+    def preprocess_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = self.add_technical_indicators(df)
+        df = self.add_time_features(df)
+        df = self.add_price_patterns(df)
+        return df
+```
+
+- rep_dataset.py
+
+```python
+class RollingExtremaDataset(Dataset):
+    def __init__(self, file_path, window_size=10, split="all", split_ratio=0.8):
+        if window_size % 2 != 0:
+            raise ValueError(
+                "window_size must be even to align with full trading days."
+            )
+        if os.path.isdir(file_path):
+            csv_files = sorted(glob.glob(os.path.join(file_path, "*.csv")))
+            if not csv_files:
+                raise ValueError(f"No CSV files found in directory: {file_path}")
+            logger.info(
+                colored(
+                    f"Loading {len(csv_files)} CSV files from directory: {file_path}",
+                    "green",
+                )
+            )
+            dfs = []
+            for f in csv_files:
+                df = pd.read_csv(f)
+                dfs.append(df)
+            df = pd.concat(dfs, ignore_index=True)
+        else:
+            df = pd.read_csv(file_path)
+        feature_engineer = StockFeatureEngineer()
+        df = feature_engineer.preprocess_features(df)
+        half_day_groups = feature_engineer.aggregate_half_days(df)
+        half_day_groups, self.scaler = feature_engineer.normalize_features(
+            half_day_groups
+        )
+        self.feature_cols = [
+            col for col in half_day_groups.columns if col not in ["date", "is_am"]
+        ]
+        self.features = half_day_groups[self.feature_cols].values.astype(np.float32)
+        self.dates = half_day_groups["date"].values
+        self.is_am = half_day_groups["is_am"].values
+        self.num_half_days = len(self.features)
+        if self.num_half_days % 2 != 0:
+            logger.warning("Total half-days is odd; truncating last incomplete day.")
+            self.num_half_days -= 1
+            self.features = self.features[: self.num_half_days]
+            self.dates = self.dates[: self.num_half_days]
+            self.is_am = self.is_am[: self.num_half_days]
+        self.num_days = self.num_half_days // 2
+        self.window_size = window_size
+        self.sample_starts = []
+        self.target_idxs = []
+        min_start_day = window_size // 2
+        for k in range(min_start_day, self.num_days):
+            start_am = (k - window_size // 2) * 2
+            target_am = k * 2
+            if start_am >= 0 and start_am + self.window_size <= target_am:
+                self.sample_starts.append(start_am)
+                self.target_idxs.append(target_am)
+            start_pm = start_am + 1
+            target_pm = k * 2 + 1
+            if start_pm >= 0 and start_pm + self.window_size <= target_pm:
+                self.sample_starts.append(start_pm)
+                self.target_idxs.append(target_pm)
+        total_samples = len(self.sample_starts)
+        if split == "train":
+            end_idx = int(total_samples * split_ratio)
+            self.sample_starts = self.sample_starts[:end_idx]
+            self.target_idxs = self.target_idxs[:end_idx]
+            logger.info(
+                colored(
+                    f"Using train split: {len(self.sample_starts)} samples", "green"
+                )
+            )
+        elif split == "test":
+            start_idx = int(total_samples * split_ratio)
+            self.sample_starts = self.sample_starts[start_idx:]
+            self.target_idxs = self.target_idxs[start_idx:]
+            logger.info(
+                colored(f"Using test split: {len(self.sample_starts)} samples", "green")
+            )
+        elif split != "all":
+            raise ValueError(
+                f"Invalid split: {split}. Must be 'all', 'train' or 'test'."
+            )
+        if "high" not in self.feature_cols or "low" not in self.feature_cols:
+            raise ValueError("Features must include 'high' and 'low'")
+        self.high_idx = self.feature_cols.index("high")
+        self.low_idx = self.feature_cols.index("low")
+        logger.info(
+            colored(
+                f"Dataset initialized: {len(self.sample_starts)} samples "
+                f"(from {self.num_days} days, window_size={self.window_size}, split={split})",
+                "green",
+            )
+        )
+    def __getitem__(self, idx):
+        start_idx = self.sample_starts[idx]
+        x = self.features[start_idx : start_idx + self.window_size]
+        target_idx = self.target_idxs[idx]
+        y = np.array(
+            [
+                self.features[target_idx, self.high_idx],
+                self.features[target_idx, self.low_idx],
+            ],
+            dtype=np.float32,
+        )
+        return torch.from_numpy(x), torch.from_numpy(y)
+    def __len__(self):
+        return len(self.sample_starts)
+```
+
+- model.py
+
+```python
+class LSTMPredictor(nn.Module):
+    def __init__(
+        self, input_dim, hidden_dim=64, num_layers=2, output_dim=2, dropout=0.2
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.output_dim = output_dim
+        self.dropout = dropout
+        self.lstm = nn.LSTM(
+            self.input_dim,
+            self.hidden_dim,
+            self.num_layers,
+            dropout=self.dropout,  # 在 LSTM 中，dropout 只在层与层之间应用，不在时间步之间应用
+            batch_first=True,
+        )
+        self.fc = nn.Linear(self.hidden_dim, self.output_dim)
+
+    def forward(self, x):
+        _, (hn, _) = self.lstm(
+            x
+        )  # encoder: 取最后hidden, hn[-1]==>(batch_size, hidden_dim)
+        out = self.fc(hn[-1])  # decoder: 全连接层 FC 回归
+        return out
+```
+
+- train.py
+
+```python
+# data
+window_size = 10
+file_path = "no_git_oic/"
+
+# model
+batch_size = 8
+num_epochs = 64
+hidden_dim = 122
+num_layers = 2
+output_dim = 2
+dropout = 0.18
+learning_rate = 0.001
+split_ratio = 0.9
+save_model_path = "no_git_oic/models/lstm_rep_predictor.pth"
+
+def train_model(
+    model,
+    train_loader,
+    criterion,
+    optimizer,
+    num_epochs=10,
+    save_model_path=None,
+    patience=5,
+):
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    best_loss = float("inf")
+    patience_counter = 0
+    model.train()
+    for epoch in range(num_epochs):
+        total_loss = 0.0
+        for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
+            optimizer.zero_grad()
+            outputs = model(x_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            total_loss += loss.item()
+        avg_loss = total_loss / len(train_loader)
+        scheduler.step(avg_loss)
+        logger.info(
+            colored(
+                f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.4f}", "green"
+            )
+        )
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            patience_counter = 0
+            if save_model_path:
+                os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
+                torch.save(model.state_dict(), save_model_path)
+                logger.info(
+                    colored(
+                        f"Best model saved at epoch {epoch+1} with loss {best_loss:.4f}",
+                        "yellow",
+                    )
+                )
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                logger.info(
+                    colored(
+                        f"Early stopping at epoch {epoch+1} (patience {patience} exceeded)",
+                        "red",
+                    )
+                )
+                break
+def evaluate_model(model, test_loader, criterion, test_dataset):
+    model.eval()
+    total_loss = 0.0
+    all_preds, all_targets = [], []
+    with torch.no_grad():
+        for batch_idx, (x_batch, y_batch) in enumerate(test_loader):
+            outputs = model(x_batch)
+            loss = criterion(outputs, y_batch)
+            total_loss += loss.item()
+            all_preds.append(outputs.cpu().numpy())
+            all_targets.append(y_batch.cpu().numpy())
+            if batch_idx == 0:
+                logger.info(
+                    colored(
+                        f"Batch {batch_idx} Pred (normalized): {outputs[0].numpy()}, Target (normalized): {y_batch[0].numpy()}",
+                        "blue",
+                    )
+                )
+    avg_loss = total_loss / len(test_loader)
+    logger.info(colored(f"Test Avg MSE: {avg_loss:.4f}", "blue"))
+    preds_flat = np.concatenate(all_preds)[:5]
+    targets_flat = np.concatenate(all_targets)[:5]
+    high_idx = test_dataset.high_idx
+    low_idx = test_dataset.low_idx
+    feature_cols = test_dataset.feature_cols
+    n_samples = len(preds_flat)
+    dummy_features = np.zeros((n_samples, len(feature_cols)))
+    for i in range(n_samples):
+        dummy_features[i, high_idx] = preds_flat[i, 0]
+        dummy_features[i, low_idx] = preds_flat[i, 1]
+    pred_original = test_dataset.scaler.inverse_transform(dummy_features)
+    pred_high_low = pred_original[:, [high_idx, low_idx]]
+    for i in range(n_samples):
+        dummy_features[i, high_idx] = targets_flat[i, 0]
+        dummy_features[i, low_idx] = targets_flat[i, 1]
+    target_original = test_dataset.scaler.inverse_transform(dummy_features)
+    target_high_low = target_original[:, [high_idx, low_idx]]
+    print(
+        "\nPrediction (normalized)\t\tActual (normalized)\t\tPred (high, low)\t\t\tActual (high, low)"
+    )
+    print("-" * 120)
+    for i in range(5):
+        print(
+            f"{preds_flat[i, 0]:.4f}, {preds_flat[i, 1]:.4f}\t\t\t"
+            f"{targets_flat[i, 0]:.4f}, {targets_flat[i, 1]:.4f}\t\t\t"
+            f"{pred_high_low[i, 0]:.4f}, {pred_high_low[i, 1]:.4f}\t\t\t"
+            f"{target_high_low[i, 0]:.4f}, {target_high_low[i, 1]:.4f}"
+        )
+    return avg_loss
+def main(
+    file_path,
+    window_size,
+    batch_size,
+    num_epochs,
+    hidden_dim,
+    num_layers,
+    output_dim,
+    dropout,
+    learning_rate,
+    split_ratio,
+    save_model_path,
+):
+    train_dataset = RollingExtremaDataset(
+        file_path, window_size=window_size, split="train", split_ratio=split_ratio
+    )
+    test_dataset = RollingExtremaDataset(
+        file_path, window_size=window_size, split="test", split_ratio=split_ratio
+    )
+    logger.info(colored(f"Train dataset size: {len(train_dataset)}", "yellow"))
+    logger.info(colored(f"Test dataset size: {len(test_dataset)}", "yellow"))
+    sample_x, sample_y = train_dataset[0]
+    num_features = sample_x.shape[1]
+    logger.info(colored(f"Train x.shape: {sample_x.shape}", "yellow"))
+    logger.info(colored(f"Train y: {sample_y}", "yellow"))
+    sample_x_test, sample_y_test = test_dataset[0]
+    logger.info(colored(f"Test x.shape: {sample_x_test.shape}", "yellow"))
+    logger.info(colored(f"Test y: {sample_y_test}", "yellow"))
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    model = LSTMPredictor(num_features, hidden_dim, num_layers, output_dim, dropout)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    logger.info(colored("Starting training...", "green"))
+    train_model(model, train_loader, criterion, optimizer, num_epochs)
+    logger.info(colored("Starting evaluation...", "blue"))
+    evaluate_model(model, test_loader, criterion, test_dataset)
+    os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
+    torch.save(model.state_dict(), save_model_path)
+    logger.info(
+        colored("Model saved to %s", "magenta"), os.path.dirname(save_model_path)
+    )
+```
+
+我在想,是否可以参考真正的量化策略,对我的特征参数进行修改,虽然我是:
+```
+### 按交易日滚动,滑动 window_size 个半日预测下一个半日
+- 对于第 `k` 天 (k >= window_size//2):
+- 用过去 window_size 个半日 (从 `(k - window_size//2)` 天 AM 开始) 预测第 `k` 天 AM
+- 然后滑动一步，加入真实 AM 预测第 `k` 天 PM
+```
+但比如加上前10天的大体趋势,20天的大体趋势,如果有对应数据的话
 
 ---
 

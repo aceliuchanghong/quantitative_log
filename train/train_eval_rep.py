@@ -19,6 +19,7 @@ from dataset.rep_dataset import RollingExtremaDataset
 from model.rep_lstm_model import LSTMPredictor
 from common.rep_config import (
     file_path,
+    window_size,
     batch_size,
     num_epochs,
     hidden_dim,
@@ -153,7 +154,7 @@ def evaluate_model(model, test_loader, criterion, test_dataset):
         "\nPrediction (normalized)\t\tActual (normalized)\t\tPred (high, low)\t\t\tActual (high, low)"
     )
     print("-" * 120)
-    for i in range(5):
+    for i in range(1):
         print(
             f"{preds_flat[i, 0]:.4f}, {preds_flat[i, 1]:.4f}\t\t\t"
             f"{targets_flat[i, 0]:.4f}, {targets_flat[i, 1]:.4f}\t\t\t"
@@ -166,6 +167,7 @@ def evaluate_model(model, test_loader, criterion, test_dataset):
 
 def main(
     file_path,
+    window_size,
     batch_size,
     num_epochs,
     hidden_dim,
@@ -182,10 +184,10 @@ def main(
 
     # 加载数据集
     train_dataset = RollingExtremaDataset(
-        file_path, split="train", split_ratio=split_ratio
+        file_path, window_size=window_size, split="train", split_ratio=split_ratio
     )
     test_dataset = RollingExtremaDataset(
-        file_path, split="test", split_ratio=split_ratio
+        file_path, window_size=window_size, split="test", split_ratio=split_ratio
     )
 
     logger.info(colored(f"Train dataset size: {len(train_dataset)}", "yellow"))
@@ -241,58 +243,6 @@ def main(
     )
 
 
-import optuna
-
-
-def objective(trial):
-    # 动态采样超参数
-    hidden_dim = trial.suggest_int("hidden_dim", 32, 128)  # 范围：32~128
-    num_layers = trial.suggest_int("num_layers", 1, 3)  # 1~3 层
-    dropout = trial.suggest_float("dropout", 0.1, 0.5)  # 0.1~0.5
-    learning_rate = trial.suggest_float(
-        "learning_rate", 1e-4, 1e-2, log=True
-    )  # log 尺度
-    batch_size = trial.suggest_categorical("batch_size", [8, 16, 32])  # 离散选项
-
-    # 加载数据集（固定 split_ratio）
-    train_dataset = RollingExtremaDataset(
-        file_path, split="train", split_ratio=split_ratio
-    )
-    test_dataset = RollingExtremaDataset(
-        file_path, split="test", split_ratio=split_ratio
-    )
-
-    # DataLoader
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    # 模型
-    num_features = train_dataset[0][0].shape[1]
-    model = LSTMPredictor(num_features, hidden_dim, num_layers, output_dim, dropout)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-    # 训练
-    train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs)
-
-    # 评估
-    test_loss = evaluate_model(
-        model, test_loader, criterion, test_dataset
-    )  # 传入 test_dataset 以支持反归一化
-
-    return test_loss  # Optuna 最小化这个值
-
-
-def main_optuna(
-    file_path, split_ratio, save_model_path=None, num_epochs=None, n_trials=100
-):
-    study = optuna.create_study(direction="minimize")  # 最小化 MSE
-    study.optimize(objective, n_trials=n_trials)  # 运行 k 次试验
-
-    logger.info(colored(f"Best trial: {study.best_trial.value:.4f}", "green"))
-    logger.info(colored(f"Best params: {study.best_trial.params}", "green"))
-
-
 if __name__ == "__main__":
     """
     uv run train/train_eval_rep.py
@@ -301,6 +251,7 @@ if __name__ == "__main__":
     """
     main(
         file_path,
+        window_size,
         batch_size,
         num_epochs,
         hidden_dim,
@@ -311,4 +262,3 @@ if __name__ == "__main__":
         split_ratio,
         save_model_path,
     )
-    # main_optuna(file_path, split_ratio, save_model_path, num_epochs)

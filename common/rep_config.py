@@ -10,5 +10,5 @@ num_layers = 2
 output_dim = 2
 dropout = 0.18
 learning_rate = 0.001
-split_ratio = 0.9
+split_ratio = 0.99
 save_model_path = "no_git_oic/models/lstm_rep_predictor.pth"

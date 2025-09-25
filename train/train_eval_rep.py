@@ -50,13 +50,19 @@ def train_model(
     patience_counter = 0
     train_losses = []
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(colored(f"Using device: {device}", "yellow"))
+
     model.train()
+    model.to(device)
 
     for epoch in range(num_epochs):
         total_loss = 0.0
         batch_count = 0
 
         for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
+            x_batch = x_batch.to(device)
+            y_batch = y_batch.to(device)
             optimizer.zero_grad()
 
             outputs = model(x_batch)
@@ -99,23 +105,13 @@ def train_model(
             best_loss = avg_loss
             patience_counter = 0
             if save_model_path:
-                os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
-                torch.save(
-                    {
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "epoch": epoch,
-                        "loss": best_loss,
-                        "feature_cols": train_loader.dataset.feature_cols,
-                        "scaler": train_loader.dataset.scaler,
-                    },
+                save_checkpoint(
+                    model,
+                    optimizer,
+                    epoch,
+                    best_loss,
+                    train_loader.dataset,
                     save_model_path,
-                )
-                logger.info(
-                    colored(
-                        f"Best model saved at epoch {epoch+1} with loss {best_loss:.4f}",
-                        "yellow",
-                    )
                 )
         else:
             patience_counter += 1
@@ -129,6 +125,22 @@ def train_model(
                 break
 
     return train_losses
+
+
+def save_checkpoint(model, optimizer, epoch, loss, dataset, path):
+    """统一的模型保存函数"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "epoch": epoch,
+            "loss": loss,
+            "feature_cols": dataset.feature_cols,
+            "scaler": dataset.scaler,
+        },
+        path,
+    )
 
 
 def evaluate_model(model, test_loader, criterion, test_dataset):
@@ -246,23 +258,24 @@ def main(
     # 初始化模型、损失函数和优化器
     model = LSTMPredictor(num_features, hidden_dim, num_layers, output_dim, dropout)
     criterion = nn.MSELoss()
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # 训练
     logger.info(colored("Starting training...", "green"))
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
-    train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs)
+    train_model(
+        model,
+        train_loader,
+        criterion,
+        optimizer,
+        scheduler,
+        num_epochs,
+        save_model_path,
+    )
 
     # 评估
     logger.info(colored("Starting evaluation...", "blue"))
     evaluate_model(model, test_loader, criterion, test_dataset)
-
-    # 保存模型
-    os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
-    torch.save(model.state_dict(), save_model_path)
-    logger.info(
-        colored("Model saved to %s", "magenta"), os.path.dirname(save_model_path)
-    )
 
 
 if __name__ == "__main__":

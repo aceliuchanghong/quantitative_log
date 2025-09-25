@@ -56,106 +56,29 @@ class RollingExtremaDataset(Dataset):
 
         logger.info(colored(f"Raw data shape: {df.shape}", "yellow"))
 
-        # 使用无冗余的特征工程
+        # 特征工程
         feature_engineer = StockFeatureEngineer()
-        df = feature_engineer.preprocess_features(df)
-
-        logger.info(colored(f"After feature engineering shape: {df.shape}", "yellow"))
-
-        # 聚合为半日数据（手动实现以修复groupby后reset_index冲突问题）
-        df_agg = df.copy()
-        df_agg["datetime"] = pd.to_datetime(df_agg["datetime"])
-        df_agg["date"] = df_agg["datetime"].dt.date
-        df_agg["hour"] = df_agg["datetime"].dt.hour
-        df_agg["minute"] = df_agg["datetime"].dt.minute
-
-        # 定义半日时段
-        df_agg["is_am"] = (
-            ((df_agg["hour"] == 9) & (df_agg["minute"] >= 30))
-            | ((df_agg["hour"] == 10) | (df_agg["hour"] == 11))
-            | ((df_agg["hour"] == 12) & (df_agg["minute"] <= 30))
-        )
-        df_agg["is_pm"] = ((df_agg["hour"] == 13) & (df_agg["minute"] >= 0)) | (
-            (df_agg["hour"] == 14) | ((df_agg["hour"] == 15) & (df_agg["minute"] <= 0))
-        )
-
-        # 只保留交易时间
-        df_agg = df_agg[df_agg["is_am"] | df_agg["is_pm"]].copy()
-
-        # 创建半日标识
-        df_agg["half_day"] = df_agg["is_am"].astype(int)  # 0 for PM, 1 for AM
-
-        # 聚合字典
-        agg_dict = {
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum",
-            "amount": "sum",
-        }
-
-        # 对数值列使用均值聚合，排除分组键以避免reset_index冲突
-        numeric_cols = [
-            col
-            for col in df_agg.select_dtypes(include=[np.number]).columns
-            if col not in ["date", "half_day"]
-        ]
-        for col in numeric_cols:
-            if col not in agg_dict:
-                agg_dict[col] = "mean"
-
-        # 分组聚合
-        half_day_groups = (
-            df_agg.groupby(["date", "half_day"]).agg(agg_dict).reset_index()
-        )
-        half_day_groups["date"] = pd.to_datetime(half_day_groups["date"])
-        half_day_groups = half_day_groups.sort_values(["date", "half_day"]).reset_index(
-            drop=True
-        )
-
-        # 添加半日标识列
-        half_day_groups["is_am"] = half_day_groups["half_day"].astype(bool)
-
-        # 数据清洗
-        numeric_cols_agg = [
-            col
-            for col in half_day_groups.columns
-            if col not in ["date", "half_day", "is_am"]
-        ]
-        half_day_groups[numeric_cols_agg] = (
-            half_day_groups[numeric_cols_agg].bfill().ffill()
-        )
-
-        # 填充剩余缺失值
-        for col in numeric_cols_agg:
-            half_day_groups[col] = half_day_groups[col].fillna(
-                half_day_groups[col].median()
-            )
-
-        # 检查是否有缺失值
-        missing_count = half_day_groups.isnull().sum().sum()
-        if missing_count > 0:
-            logger.warning(f"Found {missing_count} missing values after aggregation")
+        df_agg = feature_engineer.aggregate_half_days(df)
+        df_features = feature_engineer.preprocess_half_day_features(df_agg)
 
         logger.info(
-            colored(f"Half-day groups shape: {half_day_groups.shape}", "yellow")
+            colored(f"After feature engineering shape: {df_features.shape}", "yellow")
         )
 
         # 标准化特征
-        half_day_groups, self.scaler = feature_engineer.normalize_features(
-            half_day_groups
+        df_normalized, self.scaler = feature_engineer.normalize_features(
+            df_features, fit_scaler=True
         )
 
         # 提取特征列
         self.feature_cols = [
             col
-            for col in half_day_groups.columns
+            for col in df_normalized.columns
             if col not in ["date", "is_am", "half_day"]
         ]
-        self.features = half_day_groups[self.feature_cols].values.astype(np.float32)
-        self.dates = half_day_groups["date"].values
-        self.is_am = half_day_groups["is_am"].values
+        self.features = df_normalized[self.feature_cols].values.astype(np.float32)
+        self.dates = df_normalized["date"].values
+        self.is_am = df_normalized["is_am"].values
 
         # 确保数据完整性
         self.num_half_days = len(self.features)

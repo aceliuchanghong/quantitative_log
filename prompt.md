@@ -1445,11 +1445,385 @@ def main(
 
 ---
 
+数据处理,按交易日滚动,滑动 window_size 个半日预测下一个半日最大值,最小值
+- 对于第 `k` 天 (k >= window_size//2):
+    - 用过去 window_size 个半日 (从 `(k - window_size//2)` 天 AM 开始) 预测第 `k` 天 AM
+    - 然后滑动一步，加入真实 AM 预测第 `k` 天 PM
+- 输入 `x`：形状 `(window_size, feature_dim)`
+- 目标 `y`：形状 `(2,)`，即 `[high, low]`
 
 
 ---
 
+## 我在做股票价格极值预测
 
+数据处理,按交易日滚动,滑动 window_size 个半日预测下一个半日最大值,最小值
+- 对于第 `k` 天 (k >= window_size//2):
+    - 用过去 window_size 个半日 (从 `(k - window_size//2)` 天 AM 开始) 预测第 `k` 天 AM
+    - 然后滑动一步，加入真实 AM 预测第 `k` 天 PM
+- 输入 `x`：形状 `(window_size, feature_dim)`
+- 目标 `y`：形状 `(2,)`，即 `[high, low]`
+
+### known-info:
+1. `no_git_oic/`目录下面的csv格式,是某一只股票分钟级别交易数据
+
+```csv
+datetime,open,high,low,close,volume,amount
+2024-01-02 09:31:00,26.5,26.73,26.5,26.6,748.0,1987564.0
+2024-01-02 09:32:00,26.61,26.64,26.58,26.61,199.0,529549.0
+...
+2024-12-31 14:56:00,30.5,30.54,30.46,30.5,297.0,906001.0
+2024-12-31 14:57:00,30.51,30.53,30.5,30.51,269.0,820930.0
+```
+
+
+```
+import os
+import glob
+import sys
+from dotenv import load_dotenv
+from termcolor import colored
+import pandas as pd
+from torch.utils.data import Dataset
+import torch
+import numpy as np
+
+sys.path.insert(
+    0,
+    os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../")),
+)
+
+from z_utils.logging_config import get_logger
+from dataset.rep_feature_engineering import StockFeatureEngineer
+
+load_dotenv()
+logger = get_logger(__name__)
+
+
+class RollingExtremaDataset(Dataset):
+    def __init__(self, file_path, window_size=10, split="all", split_ratio=0.8):
+        """
+        Args:
+            file_path (str): CSV 文件路径（或目录）
+            window_size (int): 滑动窗口大小（半日数量），必须为偶数
+            split (str): 数据集分割方式，'all' 为全集，'train' 为训练集，'test' 为测试集
+            split_ratio (float): 训练集比例(0 到 1)，默认 0.8
+        """
+        if window_size % 2 != 0:
+            raise ValueError(
+                "window_size must be even to align with full trading days."
+            )
+
+        # 加载数据
+        if os.path.isdir(file_path):
+            csv_files = sorted(glob.glob(os.path.join(file_path, "*.csv")))
+            if not csv_files:
+                raise ValueError(f"No CSV files found in directory: {file_path}")
+            logger.info(
+                colored(
+                    f"Loading {len(csv_files)} CSV files from directory: {file_path}",
+                    "green",
+                )
+            )
+
+            dfs = []
+            for f in csv_files:
+                df = pd.read_csv(f)
+                dfs.append(df)
+            df = pd.concat(dfs, ignore_index=True)
+        else:
+            df = pd.read_csv(file_path)
+
+        logger.info(colored(f"Raw data shape: {df.shape}", "yellow"))
+
+        # 特征工程
+        feature_engineer = StockFeatureEngineer()
+        df = feature_engineer.preprocess_features(df)
+
+        logger.info(colored(f"After feature engineering shape: {df.shape}", "yellow"))
+
+        # 聚合为半日数据
+        df_agg = df.copy()
+        df_agg["datetime"] = pd.to_datetime(df_agg["datetime"])
+        df_agg["date"] = df_agg["datetime"].dt.date
+        df_agg["hour"] = df_agg["datetime"].dt.hour
+        df_agg["minute"] = df_agg["datetime"].dt.minute
+
+        # 定义半日时段
+        df_agg["is_am"] = (
+            ((df_agg["hour"] == 9) & (df_agg["minute"] >= 30))
+            | ((df_agg["hour"] == 10) | (df_agg["hour"] == 11))
+            | ((df_agg["hour"] == 12) & (df_agg["minute"] <= 30))
+        )
+        df_agg["is_pm"] = ((df_agg["hour"] == 13) & (df_agg["minute"] >= 0)) | (
+            (df_agg["hour"] == 14) | ((df_agg["hour"] == 15) & (df_agg["minute"] <= 0))
+        )
+
+        # 只保留交易时间
+        df_agg = df_agg[df_agg["is_am"] | df_agg["is_pm"]].copy()
+
+        # 创建半日标识
+        df_agg["half_day"] = df_agg["is_am"].astype(int)  # 0 for PM, 1 for AM
+
+        # 聚合字典
+        agg_dict = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+            "amount": "sum",
+        }
+
+        # 对数值列使用均值聚合，排除分组键以避免reset_index冲突
+        numeric_cols = [
+            col
+            for col in df_agg.select_dtypes(include=[np.number]).columns
+            if col not in ["date", "half_day"]
+        ]
+        for col in numeric_cols:
+            if col not in agg_dict:
+                agg_dict[col] = "mean"
+
+        # 分组聚合
+        half_day_groups = (
+            df_agg.groupby(["date", "half_day"]).agg(agg_dict).reset_index()
+        )
+        half_day_groups["date"] = pd.to_datetime(half_day_groups["date"])
+        half_day_groups = half_day_groups.sort_values(["date", "half_day"]).reset_index(
+            drop=True
+        )
+
+        # 添加半日标识列
+        half_day_groups["is_am"] = half_day_groups["half_day"].astype(bool)
+
+        # 数据清洗
+        numeric_cols_agg = [
+            col
+            for col in half_day_groups.columns
+            if col not in ["date", "half_day", "is_am"]
+        ]
+        half_day_groups[numeric_cols_agg] = (
+            half_day_groups[numeric_cols_agg].bfill().ffill()
+        )
+
+        # 填充剩余缺失值
+        for col in numeric_cols_agg:
+            half_day_groups[col] = half_day_groups[col].fillna(
+                half_day_groups[col].median()
+            )
+
+        # 检查是否有缺失值
+        missing_count = half_day_groups.isnull().sum().sum()
+        if missing_count > 0:
+            logger.warning(f"Found {missing_count} missing values after aggregation")
+
+        logger.info(
+            colored(f"Half-day groups shape: {half_day_groups.shape}", "yellow")
+        )
+
+        # 标准化特征
+        half_day_groups, self.scaler = feature_engineer.normalize_features(
+            half_day_groups
+        )
+
+        # 提取特征列
+        self.feature_cols = [
+            col
+            for col in half_day_groups.columns
+            if col not in ["date", "is_am", "half_day"]
+        ]
+        self.features = half_day_groups[self.feature_cols].values.astype(np.float32)
+        self.dates = half_day_groups["date"].values
+        self.is_am = half_day_groups["is_am"].values
+
+        # 确保数据完整性
+        self.num_half_days = len(self.features)
+        if self.num_half_days % 2 != 0:
+            logger.warning("Total half-days is odd; truncating last incomplete day.")
+            self.num_half_days -= 1
+            self.features = self.features[: self.num_half_days]
+            self.dates = self.dates[: self.num_half_days]
+            self.is_am = self.is_am[: self.num_half_days]
+
+        self.num_days = self.num_half_days // 2
+        self.window_size = window_size
+
+        # 生成样本 - 按交易日滚动
+        self.sample_starts = []
+        self.target_idxs = []
+
+        # 从 window_size//2 天开始，确保有足够的历史数据
+        for k in range(window_size // 2, self.num_days):
+            # 预测第 k 天 AM (上午)
+            start_idx_am = (
+                k - window_size // 2
+            ) * 2  # 从 (k - window_size//2) 天 AM 开始
+            target_idx_am = k * 2  # 第 k 天 AM
+            if start_idx_am >= 0 and start_idx_am + window_size <= target_idx_am:
+                self.sample_starts.append(start_idx_am)
+                self.target_idxs.append(target_idx_am)
+
+            # 预测第 k 天 PM (下午) - 使用真实 AM 数据
+            start_idx_pm = start_idx_am + 1  # 加入真实 AM
+            target_idx_pm = k * 2 + 1  # 第 k 天 PM
+            if start_idx_pm >= 0 and start_idx_pm + window_size <= target_idx_pm:
+                self.sample_starts.append(start_idx_pm)
+                self.target_idxs.append(target_idx_pm)
+
+        # 数据分割
+        total_samples = len(self.sample_starts)
+        logger.info(colored(f"Total samples before split: {total_samples}", "yellow"))
+
+        if split == "train":
+            end_idx = int(total_samples * split_ratio)
+            self.sample_starts = self.sample_starts[:end_idx]
+            self.target_idxs = self.target_idxs[:end_idx]
+            logger.info(
+                colored(
+                    f"Using train split: {len(self.sample_starts)} samples", "green"
+                )
+            )
+        elif split == "test":
+            start_idx = int(total_samples * split_ratio)
+            self.sample_starts = self.sample_starts[start_idx:]
+            self.target_idxs = self.target_idxs[start_idx:]
+            logger.info(
+                colored(f"Using test split: {len(self.sample_starts)} samples", "green")
+            )
+        elif split != "all":
+            raise ValueError(
+                f"Invalid split: {split}. Must be 'all', 'train' or 'test'."
+            )
+
+        # 获取high和low的索引
+        if "high" not in self.feature_cols or "low" not in self.feature_cols:
+            raise ValueError("Features must include 'high' and 'low'")
+
+        self.high_idx = self.feature_cols.index("high")
+        self.low_idx = self.feature_cols.index("low")
+
+        logger.info(
+            colored(
+                f"Dataset initialized: {len(self.sample_starts)} samples "
+                f"(from {self.num_days} days, window_size={self.window_size}, "
+                f"features={len(self.feature_cols)}, split={split})",
+                "green",
+            )
+        )
+
+        # 输出一些特征名称供参考
+        logger.info(
+            colored(f"Sample feature names: {self.feature_cols[:5]}...", "cyan")
+        )
+
+    def __getitem__(self, idx):
+        start_idx = self.sample_starts[idx]
+        x = self.features[start_idx : start_idx + self.window_size]
+
+        target_idx = self.target_idxs[idx]
+        y = np.array(
+            [
+                self.features[target_idx, self.high_idx],
+                self.features[target_idx, self.low_idx],
+            ],
+            dtype=np.float32,
+        )
+
+        return torch.from_numpy(x), torch.from_numpy(y)
+
+    def __len__(self):
+        return len(self.sample_starts)
+```
+
+然后再做:
+```
+# 特征工程
+feature_engineer = StockFeatureEngineer()
+df = feature_engineer.preprocess_features(df)
+```
+
+分析输出了许多特征:
+
+```
+特征名称,描述,计算方式
+returns,基础收益率,close.pct_change()
+log_returns,对数收益率,np.log(close / close.shift(1))
+ma_5,5 日移动平均,close.rolling(5).mean()
+close_ma_5_ratio,收盘价与 5 日 MA 比率,close / ma_5
+ma_20,20 日移动平均,close.rolling(20).mean()
+close_ma_20_ratio,收盘价与 20 日 MA 比率,close / ma_20
+ma_60,60 日移动平均,close.rolling(60).mean()
+close_ma_60_ratio,收盘价与 60 日 MA 比率,close / ma_60
+ma_diff_5_20,5-20 日 MA 差异比率,(ma_5 - ma_20) / ma_20
+ma_diff_20_60,20-60 日 MA 差异比率,(ma_20 - ma_60) / ma_60
+macd,MACD 线,talib.MACD(close)[0]
+macd_signal,MACD 信号线,talib.MACD(close)[1]
+macd_hist,MACD 柱状图,talib.MACD(close)[2]
+macd_divergence,MACD 背离,macd - macd_signal
+rsi,RSI 指标 (14 日),"talib.RSI(close, 14)"
+rsi_extreme,RSI 极值偏差,"np.where(rsi > 80, rsi-80, np.where(rsi < 20, rsi-20, 0))"
+bb_upper,"布林带上轨 (20 日, 2 std)",talib.BBANDS(close)[0]
+bb_lower,布林带下轨,talib.BBANDS(close)[2]
+bb_middle,布林带中轨,talib.BBANDS(close)[1]
+bb_width,布林带宽度比率,(bb_upper - bb_lower) / bb_middle
+bb_position,价格在布林带位置,(close - bb_lower) / (bb_upper - bb_lower)
+stoch_k,随机指标 K 线,"talib.STOCH(high, low, close)[0]"
+stoch_extreme,随机指标极值偏差,"np.where(stoch_k > 80, stoch_k-80, np.where(stoch_k < 20, stoch_k-20, 0))"
+return_vol_5,5 日收益率波动率,returns.rolling(5).std()
+high_low_ratio_5,5 日高低价比率均值,((high - low)/close).rolling(5).mean()
+return_vol_20,20 日收益率波动率,returns.rolling(20).std()
+high_low_ratio_20,20 日高低价比率均值,((high - low)/close).rolling(20).mean()
+return_vol_60,60 日收益率波动率,returns.rolling(60).std()
+high_low_ratio_60,60 日高低价比率均值,((high - low)/close).rolling(60).mean()
+volume_ma_20,20 日成交量 MA,volume.rolling(20).mean()
+volume_ratio,成交量比率,volume / volume_ma_20
+volume_change,成交量变化率,volume.pct_change()
+momentum_5,5 日动量,close / close.shift(5)
+momentum_20,20 日动量,close / close.shift(20)
+high_20,20 日最高价,high.rolling(20).max()
+low_20,20 日最低价,low.rolling(20).min()
+resistance_distance_20,20 日阻力距离比率,(high_20 - close) / close
+support_distance_20,20 日支撑距离比率,(close - low_20) / close
+high_60,60 日最高价,high.rolling(60).max()
+low_60,60 日最低价,low.rolling(60).min()
+resistance_distance_60,60 日阻力距离比率,(high_60 - close) / close
+support_distance_60,60 日支撑距离比率,(close - low_60) / close
+adx,ADX 趋势强度 (14 日),"talib.ADX(high, low, close, 14)"
+atr,ATR 真实波动幅度 (14 日),"talib.ATR(high, low, close, 14)"
+atr_ratio,ATR 比率,atr / close
+price_acceleration,价格加速度,returns - returns.shift(1)
+acceleration_change,加速度变化,price_acceleration - price_acceleration.shift(1)
+high_change,最高价变化率,(high - close.shift(1)) / close.shift(1)
+low_change,最低价变化率,(low - close.shift(1)) / close.shift(1)
+extreme_range,极值范围比率,(high - low) / close
+volatility_breakout,波动率突破比率,return_vol_5 / return_vol_60
+volatility_expansion,波动率扩张二元,(volatility_breakout > 1.5).astype(int)
+price_volume_correlation,价量相关性 (10 日),returns.rolling(10).corr(volume_change)
+price_volume_divergence,价量背离二元,(price_volume_correlation < -0.5).astype(int)
+rsi_extreme_high,RSI 高极值二元,(rsi > 80).astype(int)
+rsi_extreme_low,RSI 低极值二元,(rsi < 20).astype(int)
+bb_breakout_upper,布林上轨突破二元,(high > bb_upper).astype(int)
+bb_breakout_lower,布林下轨突破二元,(low < bb_lower).astype(int)
+bb_squeeze,布林挤压二元 (20 日分位),(bb_width < bb_width.rolling(20).quantile(0.1)).astype(int)
+consecutive_extreme_up,连续上涨极值计数 (3 日),(returns > 0.02).rolling(3).sum()
+consecutive_extreme_down,连续下跌极值计数 (3 日),(returns < -0.02).rolling(3).sum()
+normalized_high,标准化最高价偏差,(high - close) / atr
+normalized_low,标准化最低价偏差,(close - low) / atr
+price_position_20,20 日价格位置,(close - low_20) / (high_20 - low_20)
+hour,小时,datetime.dt.hour
+minute,分钟,datetime.dt.minute
+day_of_week,周几 (0-6),datetime.dt.dayofweek
+is_opening,开盘时段二元,((hour == 9) & (minute <= 45)).astype(int)
+is_closing,收盘时段二元,((hour == 14) & (minute >= 45)).astype(int)
+buying_pressure,买入压力,volume * (close - open) / open (若 close > open)
+selling_pressure,卖出压力,volume * (open - close) / open (若 close < open)
+net_pressure,净压力,buying_pressure - selling_pressure
+price_impact,价格冲击,abs(close - open) / volume
+order_flow_imbalance,订单流不平衡,(close - (high + low)/2) / (high - low)
+```
+
+简要回答,帮我考虑下是否有问题,
 
 
 ---

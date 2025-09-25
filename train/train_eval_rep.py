@@ -40,49 +40,77 @@ def train_model(
     train_loader,
     criterion,
     optimizer,
+    scheduler,
     num_epochs=10,
     save_model_path=None,
-    patience=5,
+    patience=10,
 ):
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    """训练函数"""
     best_loss = float("inf")
     patience_counter = 0
+    train_losses = []
+
     model.train()
+
     for epoch in range(num_epochs):
         total_loss = 0.0
+        batch_count = 0
+
         for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
             optimizer.zero_grad()
+
             outputs = model(x_batch)
             loss = criterion(outputs, y_batch)
+
             loss.backward()
 
-            # 梯度裁剪，防爆炸
+            # 梯度裁剪
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
-            total_loss += loss.item()
 
-            # 每 k batch 打印一个输出样例
-            # if batch_idx % 100 == 0:
-            #     logger.info(
-            #         f"Epoch {epoch+1}, Batch {batch_idx}, Output sample: {outputs[0].detach().cpu().numpy()}"
+            total_loss += loss.item()
+            batch_count += 1
+
+            # if batch_idx % 50 == 0:
+            #     logger.debug(
+            #         f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx}], Loss: {loss.item():.4f}"
             #     )
 
-        avg_loss = total_loss / len(train_loader)
-        scheduler.step(avg_loss)
+        avg_loss = total_loss / batch_count
+        train_losses.append(avg_loss)
+
+        # 调整学习率
+        if isinstance(scheduler, ReduceLROnPlateau):
+            scheduler.step(avg_loss)
+        else:
+            scheduler.step()
+
+        current_lr = optimizer.param_groups[0]["lr"]
         logger.info(
             colored(
-                f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.4f}", "green"
+                f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}",
+                "green",
             )
         )
 
+        # 早停和模型保存
         if avg_loss < best_loss:
             best_loss = avg_loss
             patience_counter = 0
-            # 保存最佳模型
             if save_model_path:
                 os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
-                torch.save(model.state_dict(), save_model_path)
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "epoch": epoch,
+                        "loss": best_loss,
+                        "feature_cols": train_loader.dataset.feature_cols,
+                        "scaler": train_loader.dataset.scaler,
+                    },
+                    save_model_path,
+                )
                 logger.info(
                     colored(
                         f"Best model saved at epoch {epoch+1} with loss {best_loss:.4f}",
@@ -99,6 +127,8 @@ def train_model(
                     )
                 )
                 break
+
+    return train_losses
 
 
 def evaluate_model(model, test_loader, criterion, test_dataset):
@@ -150,17 +180,24 @@ def evaluate_model(model, test_loader, criterion, test_dataset):
     target_high_low = target_original[:, [high_idx, low_idx]]
 
     # 打印表格：归一化 vs 原始价格
+    col_width = 30
+    print("\n" + "=" * (col_width * 4))
     print(
-        "\nPrediction (normalized)\t\tActual (normalized)\t\tPred (high, low)\t\t\tActual (high, low)"
+        f"{'Prediction (normalized)':<{col_width}} {'Actual (normalized)':<{col_width}} {'Pred (high, low)':<{col_width}} {'Actual (high, low)':<{col_width}}"
     )
-    print("-" * 120)
-    for i in range(1):
+    print("=" * (col_width * 4))
+
+    for i in range(3):
+        pred_norm = f"{preds_flat[i, 0]:.4f}, {preds_flat[i, 1]:.4f}"
+        actual_norm = f"{targets_flat[i, 0]:.4f}, {targets_flat[i, 1]:.4f}"
+        pred_orig = f"{pred_high_low[i, 0]:.4f}, {pred_high_low[i, 1]:.4f}"
+        actual_orig = f"{target_high_low[i, 0]:.4f}, {target_high_low[i, 1]:.4f}"
+
         print(
-            f"{preds_flat[i, 0]:.4f}, {preds_flat[i, 1]:.4f}\t\t\t"
-            f"{targets_flat[i, 0]:.4f}, {targets_flat[i, 1]:.4f}\t\t\t"
-            f"{pred_high_low[i, 0]:.4f}, {pred_high_low[i, 1]:.4f}\t\t\t"
-            f"{target_high_low[i, 0]:.4f}, {target_high_low[i, 1]:.4f}"
+            f"{pred_norm:<{col_width}} {actual_norm:<{col_width}} {pred_orig:<{col_width}} {actual_orig:<{col_width}}"
         )
+
+    print("=" * (col_width * 4))
 
     return avg_loss
 
@@ -202,22 +239,6 @@ def main(
     logger.info(colored(f"Test x.shape: {sample_x_test.shape}", "yellow"))
     logger.info(colored(f"Test y: {sample_y_test}", "yellow"))
 
-    # for i in range(min(5, len(train_dataset))):
-    #     x_sample, y_sample = train_dataset[i]
-    #     msg = (
-    #         f"Train Sample {i}: x shape={x_sample.shape}, "
-    #         f"x mean={x_sample.mean():.4f}, x std={x_sample.std():.4f}, y={y_sample}"
-    #     )
-    #     logger.debug(colored("%s", "blue"), msg)
-
-    # for i in range(min(3, len(test_dataset))):
-    #     x_sample, y_sample = test_dataset[i]
-    #     msg = (
-    #         f"Test Sample {i}: x shape={x_sample.shape}, "
-    #         f"x mean={x_sample.mean():.4f}, x std={x_sample.std():.4f}, y={y_sample}"
-    #     )
-    #     logger.debug(colored("%s", "blue"), msg)
-
     # 创建 DataLoader
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -225,11 +246,12 @@ def main(
     # 初始化模型、损失函数和优化器
     model = LSTMPredictor(num_features, hidden_dim, num_layers, output_dim, dropout)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
     # 训练
     logger.info(colored("Starting training...", "green"))
-    train_model(model, train_loader, criterion, optimizer, num_epochs)
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs)
 
     # 评估
     logger.info(colored("Starting evaluation...", "blue"))
@@ -247,7 +269,7 @@ if __name__ == "__main__":
     """
     uv run train/train_eval_rep.py
 
-    Test Avg MSE: 0.0534 ==> 2024+2025
+    Test Avg MSE: 0.0416 ==> 2024+2025
     """
     main(
         file_path,

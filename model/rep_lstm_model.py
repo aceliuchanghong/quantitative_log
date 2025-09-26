@@ -32,7 +32,9 @@ class LSTMPredictor(nn.Module):
             self.input_dim,
             self.hidden_dim,
             self.num_layers,
-            dropout=self.dropout,  # 在 LSTM 中，dropout 只在层与层之间应用，不在时间步之间应用
+            dropout=(
+                self.dropout if self.num_layers > 1 else 0
+            ),  # 在 LSTM 中，dropout 只在层与层之间应用，不在时间步之间应用
             batch_first=True,
         )
         self.fc = nn.Linear(self.hidden_dim, self.output_dim)

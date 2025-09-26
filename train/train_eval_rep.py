@@ -199,7 +199,7 @@ def evaluate_model(model, test_loader, criterion, test_dataset):
     )
     print("=" * (col_width * 4))
 
-    for i in range(3):
+    for i in range(2):
         pred_norm = f"{preds_flat[i, 0]:.4f}, {preds_flat[i, 1]:.4f}"
         actual_norm = f"{targets_flat[i, 0]:.4f}, {targets_flat[i, 1]:.4f}"
         pred_orig = f"{pred_high_low[i, 0]:.4f}, {pred_high_low[i, 1]:.4f}"
@@ -235,25 +235,15 @@ def main(
     train_dataset = RollingExtremaDataset(
         file_path, window_size=window_size, split="train", split_ratio=split_ratio
     )
-    test_dataset = RollingExtremaDataset(
-        file_path, window_size=window_size, split="test", split_ratio=split_ratio
-    )
-
     logger.info(colored(f"Train dataset size: {len(train_dataset)}", "yellow"))
-    logger.info(colored(f"Test dataset size: {len(test_dataset)}", "yellow"))
 
     sample_x, sample_y = train_dataset[0]
     num_features = sample_x.shape[1]
     logger.info(colored(f"Train x.shape: {sample_x.shape}", "yellow"))
     logger.info(colored(f"Train y: {sample_y}", "yellow"))
 
-    sample_x_test, sample_y_test = test_dataset[0]
-    logger.info(colored(f"Test x.shape: {sample_x_test.shape}", "yellow"))
-    logger.info(colored(f"Test y: {sample_y_test}", "yellow"))
-
     # 创建 DataLoader
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # 初始化模型、损失函数和优化器
     model = LSTMPredictor(num_features, hidden_dim, num_layers, output_dim, dropout)
@@ -275,6 +265,15 @@ def main(
 
     # 评估
     logger.info(colored("Starting evaluation...", "blue"))
+    test_dataset = RollingExtremaDataset(
+        file_path, window_size=window_size, split="test", split_ratio=split_ratio
+    )
+    logger.info(colored(f"Test dataset size: {len(test_dataset)}", "yellow"))
+
+    sample_x_test, sample_y_test = test_dataset[0]
+    logger.info(colored(f"Test x.shape: {sample_x_test.shape}", "yellow"))
+    logger.info(colored(f"Test y: {sample_y_test}", "yellow"))
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     evaluate_model(model, test_loader, criterion, test_dataset)
 
 
@@ -282,7 +281,7 @@ if __name__ == "__main__":
     """
     uv run train/train_eval_rep.py
 
-    Test Avg MSE: 0.0416 ==> 2024+2025
+    Test Avg Loss: 0.0050 ==> 2024+2025
     """
     main(
         file_path,

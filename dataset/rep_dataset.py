@@ -48,11 +48,14 @@ class RollingExtremaDataset(Dataset):
 
             dfs = []
             for f in csv_files:
-                df = pd.read_csv(f)
-                dfs.append(df)
+                df_temp = pd.read_csv(f)
+                dfs.append(df_temp)
             df = pd.concat(dfs, ignore_index=True)
         else:
             df = pd.read_csv(file_path)
+
+        # 排序确保时间序
+        df = df.sort_values("datetime").reset_index(drop=True)
 
         logger.info(colored(f"Raw data shape: {df.shape}", "yellow"))
 
@@ -103,14 +106,14 @@ class RollingExtremaDataset(Dataset):
                 k - window_size // 2
             ) * 2  # 从 (k - window_size//2) 天 AM 开始
             target_idx_am = k * 2  # 第 k 天 AM
-            if start_idx_am >= 0 and start_idx_am + window_size <= target_idx_am:
+            if start_idx_am >= 0 and start_idx_am + window_size == target_idx_am:
                 self.sample_starts.append(start_idx_am)
                 self.target_idxs.append(target_idx_am)
 
             # 预测第 k 天 PM (下午) - 使用真实 AM 数据
-            start_idx_pm = start_idx_am + 1  # 加入真实 AM
+            start_idx_pm = start_idx_am + 1  # 滑动一步，加入真实 AM
             target_idx_pm = k * 2 + 1  # 第 k 天 PM
-            if start_idx_pm >= 0 and start_idx_pm + window_size <= target_idx_pm:
+            if start_idx_pm >= 0 and start_idx_pm + window_size == target_idx_pm:
                 self.sample_starts.append(start_idx_pm)
                 self.target_idxs.append(target_idx_pm)
 
@@ -145,6 +148,8 @@ class RollingExtremaDataset(Dataset):
 
         self.high_idx = self.feature_cols.index("high")
         self.low_idx = self.feature_cols.index("low")
+
+        self.feature_names = self.feature_cols  # 添加，便于调试
 
         logger.info(
             colored(

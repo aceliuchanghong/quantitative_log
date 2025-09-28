@@ -2163,7 +2163,18 @@ if __name__ == "__main__":
 
 ---
 
-
+- 基础：`open`, `high`, `low`, `close`, `volume`, `amount`
+- 收益率：`returns`
+- 移动平均：`close_ma_5_ratio`, `close_ma_20_ratio`, `ma_diff_5_20`
+- 波动率：`return_vol_5`, `return_vol_20`, `volatility_breakout`
+- ATR：`atr`, `atr_ratio`, `normalized_high`, `normalized_low`
+- 布林带：`bb_width`, `bb_position`, `bb_squeeze`
+- 支撑阻力：`support_distance_20`, `resistance_distance_20`
+- 动量：`momentum_5`
+- 加速度：`price_acceleration`
+- 极值结构：`extreme_range`, `high_change`, `low_change`, `price_position_20`
+- 技术指标：`rsi`, `macd_divergence`, `cci`, `williams_r`
+- 成交量：`volume_ratio`
 
 
 ---

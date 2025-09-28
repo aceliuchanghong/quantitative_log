@@ -5,7 +5,7 @@ file_path = "no_git_oic/"
 # model
 batch_size = 16
 num_epochs = 200
-hidden_dim = 128
+hidden_dim = 64
 num_layers = 2
 output_dim = 2
 dropout = 0.2

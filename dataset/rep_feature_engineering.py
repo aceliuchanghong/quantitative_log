@@ -204,12 +204,13 @@ class StockFeatureEngineer:
     def normalize_features(
         self, df: pd.DataFrame, fit_scaler: bool = True, scaler=None
     ):
+        """
+        标准化特征列 排除 date, is_am, half_day
+        """
         feature_cols = [
             col for col in df.columns if col not in ["date", "is_am", "half_day"]
         ]
-        df[feature_cols] = df[feature_cols].fillna(
-            df[feature_cols].mean()
-        )  # 用mean填充，提升稳定性
+        df[feature_cols] = df[feature_cols].fillna(0)
 
         if fit_scaler:
             scaler = StandardScaler()
@@ -221,6 +222,7 @@ class StockFeatureEngineer:
 
         normalized_df = df.copy()
         normalized_df[feature_cols] = normalized_values
+
         return normalized_df, scaler
 
 

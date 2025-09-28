@@ -46,6 +46,36 @@ def get_ticker(stock_code: str) -> str:
         )
 
 
+def get_akshare_symbol(stock_code: str) -> str:
+    """
+    根据A股股票代码判断并返回akshare所需的symbol格式。
+    上海证券交易所的股票代码以'6'开头，前面需要加上'sh'。
+    深圳证券交易所的股票代码以'0'或'3'开头，前面需要加上'sz'。
+
+    Args:
+        stock_code (str): 6位数的A股股票代码。
+    Returns:
+        str: 适用于akshare的股票代码 (e.g., 'sh600519')。
+    Raises:
+        ValueError: 如果股票代码不是一个有效的6位数字字符串 或者不是以上海'6'或深圳'0'、'3'开头。
+    """
+    if (
+        not isinstance(stock_code, str)
+        or not stock_code.isdigit()
+        or len(stock_code) != 6
+    ):
+        raise ValueError(f"无效的股票代码格式: '{stock_code}'。应为6位数字字符串。")
+
+    if stock_code.startswith("6"):
+        return f"sh{stock_code}"
+    elif stock_code.startswith(("0", "3")):
+        return f"sz{stock_code}"
+    else:
+        raise ValueError(
+            f"无法识别的A股股票代码: '{stock_code}'。应以上海'6'或深圳'0'、'3'开头。"
+        )
+
+
 if __name__ == "__main__":
     """
     uv run tools/fix_code_tool.py

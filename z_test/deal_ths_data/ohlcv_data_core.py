@@ -47,9 +47,10 @@ def get_stock_intraday_data(stock_code: str, target_date: str) -> pd.DataFrame:
 
     # 调用高频序列接口
     result = THS_HF(stock_code, indicators, params, start_time, end_time)
+    # print(colored(f"result:{result}", "light_yellow"))
 
     if result.errorcode != 0:
-        print(f"数据获取失败，代码: {result.errorcode}, 信息: {result.errormsg}")
+        print(f"数据获取失败，代码: {result.errorcode}, 信息: {result.errmsg}")
         return pd.DataFrame()
 
     # 返回 DataFrame 数据部分

@@ -3,6 +3,7 @@ import sys
 import pandas as pd
 from dotenv import load_dotenv
 from termcolor import colored
+from tqdm import tqdm
 
 sys.path.insert(
     0,
@@ -22,6 +23,9 @@ def format_stock_code(symbol: str) -> str:
     将 6位数字代码 转换为 带后缀的格式 (iFinD 标准)
     """
     symbol = str(symbol).strip()
+
+    if not symbol.isdigit():
+        return symbol
 
     # 补齐6位
     if len(symbol) < 6:
@@ -43,7 +47,7 @@ def save_data_to_csv(df: pd.DataFrame, stock_code: str, target_date: str) -> str
     保存数据到指定目录: no_git_oic/historical_data/{YYYYMMDD}/{code}.csv
     """
     if df is None or df.empty:
-        logger.warning(f"数据为空，跳过保存: {stock_code}")
+        # logger.warning(f"数据为空，跳过保存: {target_date} {stock_code}")
         return
 
     # 转换日期格式: 2025-12-03 -> 20251203
@@ -61,7 +65,7 @@ def save_data_to_csv(df: pd.DataFrame, stock_code: str, target_date: str) -> str
     file_path = os.path.join(target_dir, f"{stock_code}.csv")
     df.to_csv(file_path, index=False, encoding="utf-8")
 
-    print(colored(f"文件已保存至: {file_path}", "green"))
+    # print(colored(f"文件已保存至: {file_path}", "green"))
     return file_path
 
 
@@ -72,18 +76,22 @@ if __name__ == "__main__":
     # 首先登陆
     thslogindemo()
     # 获取日期
-    start_date = "2000-01-01"
+    start_date = "2011-06-15"
     end_date = "2025-12-26"
     trading_days = get_trading_days(start_date, end_date)
     date_list = trading_days.sort_values().strftime("%Y-%m-%d").tolist()
     # 循环每个日期
-    for this_date in date_list:
-        print(f"working on:{this_date}")
+    for this_date in tqdm(date_list, desc="Processing dates", unit="date"):
+        print(colored(f"Working on: {this_date}", "light_green"))
         # 获取某日期所有的股票代码
         codes = get_historical_codes_baostock_core(this_date)
-        for code in codes:
+        # 为股票代码循环添加进度条
+        for code in tqdm(
+            codes, desc=f"  Processing stocks on {this_date}", unit="stock", leave=False
+        ):
             code = format_stock_code(code)
-            # 获取某股票,某日分钟基本数据
+            # 获取某股票、某日分钟基本数据
             df = get_stock_intraday_data(code, this_date)
             save_csv_file_path = save_data_to_csv(df, code, this_date)
-            print(f"saved in :{save_csv_file_path}")
+            # if save_csv_file_path:
+            #     print(f"Saved in: {save_csv_file_path}")

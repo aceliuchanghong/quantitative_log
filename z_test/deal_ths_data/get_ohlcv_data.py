@@ -1,16 +1,21 @@
 import os
 import sys
+import asyncio
 import pandas as pd
 from dotenv import load_dotenv
 from termcolor import colored
-from tqdm import tqdm
+from tqdm.asyncio import tqdm
 
 sys.path.insert(
     0,
     os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../")),
 )
 from z_utils.logging_config import get_logger
-from z_test.deal_ths_data.ohlcv_data_core import get_stock_intraday_data, thslogindemo
+from z_test.deal_ths_data.ohlcv_data_core import (
+    get_stock_intraday_data,
+    get_stock_intraday_data_async,
+    thslogindemo,
+)
 from z_test.deal_ths_data.get_trade_date import get_trading_days
 from z_test.deal_ths_data.get_trade_code import get_historical_codes_baostock_core
 
@@ -69,6 +74,36 @@ def save_data_to_csv(df: pd.DataFrame, stock_code: str, target_date: str) -> str
     return file_path
 
 
+async def download_single_stock(
+    code: str, this_date: str, semaphore: asyncio.Semaphore
+):
+    """
+    单个股票的异步下载任务，带并发控制
+    """
+    async with semaphore:  # 控制并发数
+        try:
+            formatted_code = format_stock_code(code)
+            df = await get_stock_intraday_data_async(formatted_code, this_date)
+            save_data_to_csv(df, formatted_code, this_date)
+        except Exception as e:
+            logger.error(f"Error processing {code} on {this_date}: {e}")
+
+
+async def process_date_stocks_async(
+    codes: list, this_date: str, max_concurrent: int = 20
+):
+    """
+    并发处理某一天内的所有股票
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    tasks = [download_single_stock(code, this_date, semaphore) for code in codes]
+
+    # 使用 tqdm.gather 展示异步进度
+    await tqdm.gather(
+        *tasks, desc=f"  Processing {this_date}", unit="stock", leave=False
+    )
+
+
 if __name__ == "__main__":
     """
     uv run z_test/deal_ths_data/get_ohlcv_data.py
@@ -81,17 +116,11 @@ if __name__ == "__main__":
     trading_days = get_trading_days(start_date, end_date)
     date_list = trading_days.sort_values().strftime("%Y-%m-%d").tolist()
     # 循环每个日期
-    for this_date in tqdm(date_list, desc="Processing dates", unit="date"):
-        print(colored(f"Working on: {this_date}", "light_green"))
-        # 获取某日期所有的股票代码
+    for this_date in tqdm(date_list, desc="Overall Progress", unit="date"):
+        print(colored(f"\nWorking on: {this_date}", "light_green"))
+
+        # 获取该日所有代码
         codes = get_historical_codes_baostock_core(this_date)
-        # 为股票代码循环添加进度条
-        for code in tqdm(
-            codes, desc=f"  Processing stocks on {this_date}", unit="stock", leave=False
-        ):
-            code = format_stock_code(code)
-            # 获取某股票、某日分钟基本数据
-            df = get_stock_intraday_data(code, this_date)
-            save_csv_file_path = save_data_to_csv(df, code, this_date)
-            # if save_csv_file_path:
-            #     print(f"Saved in: {save_csv_file_path}")
+
+        # 4运行异步事件循环处理当天的所有股票
+        asyncio.run(process_date_stocks_async(codes, this_date, max_concurrent=50))

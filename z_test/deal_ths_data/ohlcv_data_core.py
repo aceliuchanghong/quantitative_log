@@ -1,16 +1,18 @@
 import os
 import sys
 import pandas as pd
+import asyncio
 from iFinDPy import *
 from dotenv import load_dotenv
 from termcolor import colored
+import time
 
 sys.path.insert(
     0,
     os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../")),
 )
 from z_utils.logging_config import get_logger
-from z_utils.db_cache import cache_to_duckdb
+from z_utils.db_cache import cache_to_duckdb, cache_to_duckdb_async
 
 load_dotenv()
 logger = get_logger(__name__)
@@ -26,6 +28,36 @@ def thslogindemo():
         print("iFinDLogin 登录成功")
     else:
         print("登录失败")
+
+
+@cache_to_duckdb_async(db_name="stock_data.duckdb", debug=False)
+async def get_stock_intraday_data_async(
+    stock_code: str, target_date: str
+) -> pd.DataFrame:
+    """
+    异步获取指定股票在特定日期的当日高频细节数据
+    """
+    # 1. 构造参数
+    start_time = f"{target_date} 09:15:00"
+    end_time = f"{target_date} 15:15:00"
+    indicators = "open;high;low;close;volume;avgPrice;turnoverRatio;changeRatio"
+    params = "CPS:forward1,Fill:Original"
+
+    # 2. 使用 to_thread 将阻塞的 SDK 调用放入线程池执行
+    # 这样不会阻塞 asyncio 的事件循环
+    try:
+        result = await asyncio.to_thread(
+            THS_HF, stock_code, indicators, params, start_time, end_time
+        )
+
+        if result.errorcode != 0:
+            print(f"数据获取失败 [{stock_code}]: {result.errmsg}")
+            return pd.DataFrame()
+
+        return result.data
+    except Exception as e:
+        print(f"异步请求发生异常 [{stock_code}]: {e}")
+        return pd.DataFrame()
 
 
 @cache_to_duckdb(db_name="stock_data.duckdb", debug=False)
@@ -57,6 +89,32 @@ def get_stock_intraday_data(stock_code: str, target_date: str) -> pd.DataFrame:
     return result.data
 
 
+async def test_single_and_multiple_stocks():
+    target_date = "2023-12-22"
+    stocks = ["603678.SH", "000001.SZ", "600519.SH"]
+
+    print(f"--- 开始测试异步获取 {len(stocks)} 只股票数据 ---")
+    start_time = time.perf_counter()
+
+    # 1. 创建任务列表
+    tasks = [get_stock_intraday_data_async(code, target_date) for code in stocks]
+
+    # 2. 并发执行并等待结果
+    results = await asyncio.gather(*tasks)
+
+    end_time = time.perf_counter()
+    print(f"--- 测试完成，耗时: {end_time - start_time:.2f} 秒 ---\n")
+
+    # 3. 验证结果
+    for i, df in enumerate(results):
+        stock_code = stocks[i]
+        if not df.empty:
+            print(f"✅ {stock_code}: 获取成功，行数: {len(df)}")
+            print(df.head(2))  # 查看前两行
+        else:
+            print(f"❌ {stock_code}: 获取失败或无数据")
+
+
 if __name__ == "__main__":
     """
     ### OHLCV
@@ -77,15 +135,20 @@ if __name__ == "__main__":
     uv run z_test/deal_ths_data/ohlcv_data_core.py
     """
     thslogindemo()
-    code = "603678.SH"
-    this_date = "2025-12-03"
+
+    # code = "603678.SH"
+    # this_date = "2025-12-03"
+    # try:
+    #     df = get_stock_intraday_data(code, this_date)
+    #     if not df.empty:
+    #         print(f"成功获取 {code} 在 {this_date} 的数据，共 {len(df)} 行：")
+    #         print(colored(f"{df.head()}", "light_yellow"))
+    #     else:
+    #         print("未能获取到数据，请检查日期是否为交易日或代码是否正确。")
+    # except Exception as e:
+    #     print(f"程序运行出错: {e}")
 
     try:
-        df = get_stock_intraday_data(code, this_date)
-        if not df.empty:
-            print(f"成功获取 {code} 在 {this_date} 的数据，共 {len(df)} 行：")
-            print(colored(f"{df.head()}", "light_yellow"))
-        else:
-            print("未能获取到数据，请检查日期是否为交易日或代码是否正确。")
-    except Exception as e:
-        print(f"程序运行出错: {e}")
+        asyncio.run(test_single_and_multiple_stocks())
+    except KeyboardInterrupt:
+        pass

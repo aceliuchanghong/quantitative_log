@@ -5,6 +5,19 @@ import time as _time
 import json
 from threading import Thread, Lock, Semaphore
 import requests
+import os
+import sys
+from dotenv import load_dotenv
+from termcolor import colored
+
+sys.path.insert(
+    0,
+    os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../")),
+)
+from z_utils.logging_config import get_logger
+
+load_dotenv()
+logger = get_logger(__name__)
 
 sem = Semaphore(5)  # 此变量用于控制最大并发数
 
@@ -12,7 +25,9 @@ sem = Semaphore(5)  # 此变量用于控制最大并发数
 # 登录函数
 def thslogindemo():
     # 输入用户的帐号和密码
-    thsLogin = THS_iFinDLogin("", "")
+    thsLogin = THS_iFinDLogin(
+        os.getenv("tonghuashun_acc"), os.getenv("tonghuashun_pwd")
+    )
     print(thsLogin)
     if thsLogin in {0, -201}:
         print("登录成功")

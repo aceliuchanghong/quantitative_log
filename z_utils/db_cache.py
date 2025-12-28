@@ -55,22 +55,66 @@ class Serializer:
             Tuple[str, str, int]: (序列化后的字符串, 数据类型, 数据量)
         """
         if isinstance(data, pd.DataFrame):
-            data_type = "dataframe"
-            serialized_data = data.to_json(orient="split", date_format="iso")
-            count = len(data)
+            return (
+                data.to_json(orient="split", date_format="iso"),
+                "pd_dataframe",
+                len(data),
+            )
+
+        elif isinstance(data, pd.Series):
+            # Series 转换为 JSON 并在反序列化时还原
+            return (
+                data.to_json(orient="split", date_format="iso"),
+                "pd_series",
+                len(data),
+            )
+
+        elif isinstance(data, pd.Index):
+            # 处理 DatetimeIndex 等索引类型
+            # 先转成 Series 以复用 split 格式，保留名称和类型
+            s = pd.Series(data)
+            return s.to_json(orient="split", date_format="iso"), "pd_index", len(data)
+
         else:
-            data_type = "json"
-            serialized_data = json.dumps(data, cls=CustomJSONEncoder)
-            count = len(data) if isinstance(data, (list, dict)) else 1
-        return serialized_data, data_type, count
+            # 通用 JSON 类型
+            try:
+                serialized = json.dumps(data, default=Serializer._custom_encoder)
+                count = len(data) if isinstance(data, (list, dict, str)) else 1
+                return serialized, "json", count
+            except Exception as e:
+                # 兜底：如果 JSON 失败，强转字符串
+                return str(data), "string", 1
 
     @staticmethod
     def deserialize(serialized_data: str, data_type: str) -> Any:
-        """根据数据类型反序列化字符串。"""
-        if data_type == "dataframe":
+        """根据记录的类型还原对象。"""
+        if not serialized_data:
+            return None
+
+        if data_type == "pd_dataframe":
             return pd.read_json(StringIO(serialized_data), orient="split")
-        else:  # "json"
+
+        elif data_type == "pd_series":
+            return pd.read_json(StringIO(serialized_data), orient="split", typ="series")
+
+        elif data_type == "pd_index":
+            # 还原为 Index
+            s = pd.read_json(StringIO(serialized_data), orient="split", typ="series")
+            return pd.Index(s)
+
+        elif data_type == "json":
             return json.loads(serialized_data)
+
+        return serialized_data
+
+    @staticmethod
+    def _custom_encoder(obj):
+        """处理 JSON 无法识别的日期等类型。"""
+        if isinstance(obj, (datetime, date, pd.Timestamp)):
+            return obj.isoformat()
+        if isinstance(obj, Path):
+            return str(obj)
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
 # --- 模块2: DuckDB 数据库管理 ---
@@ -359,7 +403,6 @@ def create_cache_decorator(is_async: bool):
 
 # --- 最终导出的接口 ---
 # 通过工厂模式生成我们需要的两个装饰器。
-
 cache_to_duckdb = create_cache_decorator(is_async=False)
 cache_to_duckdb_async = create_cache_decorator(is_async=True)
 

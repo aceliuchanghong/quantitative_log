@@ -82,8 +82,11 @@ async def download_single_stock(
     async with semaphore:  # 控制并发数
         try:
             formatted_code = format_stock_code(code)
-            df = await get_stock_intraday_data_async(formatted_code, this_date)
-            save_data_to_csv(df, formatted_code, this_date)
+            if formatted_code.startswith("399"):
+                pass
+            else:
+                df = await get_stock_intraday_data_async(formatted_code, this_date)
+                save_data_to_csv(df, formatted_code, this_date)
         except Exception as e:
             logger.error(f"Error processing {code} on {this_date}: {e}")
 
@@ -110,16 +113,19 @@ if __name__ == "__main__":
     # 首先登陆
     thslogindemo()
     # 获取日期
-    start_date = "2011-06-15"
+    start_date = "2011-06-21"
     end_date = "2025-12-26"
+    max_concurrent = 50
     trading_days = get_trading_days(start_date, end_date)
     date_list = trading_days.sort_values().strftime("%Y-%m-%d").tolist()
     # 循环每个日期
     for this_date in tqdm(date_list, desc="Overall Progress", unit="date"):
-        print(colored(f"\nWorking on: {this_date}", "light_green"))
+        logger.info(colored("Working on: %s", "green"), this_date)
 
         # 获取该日所有代码
         codes = get_historical_codes_baostock_core(this_date)
 
-        # 4运行异步事件循环处理当天的所有股票
-        asyncio.run(process_date_stocks_async(codes, this_date, max_concurrent=50))
+        # 运行异步事件循环处理当天的所有股票
+        asyncio.run(
+            process_date_stocks_async(codes, this_date, max_concurrent=max_concurrent)
+        )

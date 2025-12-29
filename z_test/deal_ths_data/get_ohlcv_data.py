@@ -12,7 +12,6 @@ sys.path.insert(
 )
 from z_utils.logging_config import get_logger
 from z_test.deal_ths_data.ohlcv_data_core import (
-    get_stock_intraday_data,
     get_stock_intraday_data_async,
     thslogindemo,
 )

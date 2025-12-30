@@ -83,7 +83,7 @@ if __name__ == "__main__":
     uv run z_utils/get_tree.py
     """
 
-    path = "../python_template"
+    path = "../quantitative_log"
     exclude_dirs_set = {
         ".env",
         ".gitignore",

@@ -89,6 +89,70 @@ def get_stock_intraday_data(stock_code: str, target_date: str) -> pd.DataFrame:
     return result.data
 
 
+@cache_to_duckdb_async(db_name="stock_data_range.duckdb")
+async def get_stock_range_data_async(
+    stock_code: str, start_date: str, end_date: str
+) -> pd.DataFrame:
+    """
+    异步获取指定股票在 start_date 与 end_date 之中的1分钟细节数据
+    """
+    # 1. 构造查询的时间范围
+    start_time = f"{start_date} 09:15:00"
+    end_time = f"{end_date} 15:15:00"
+
+    # 2. 定义需要的指标
+    indicators = "open;high;low;close;volume;avgPrice;turnoverRatio;changeRatio"
+    params = "CPS:forward1,Fill:Original"  # 前复权，保留原始值填充
+
+    # 3. 异步调用
+    try:
+        result = await asyncio.to_thread(
+            THS_HF, stock_code, indicators, params, start_time, end_time
+        )
+
+        if result.errorcode != 0:
+            print(f"数据获取失败 [{stock_code}]: {result.errmsg}")
+            return pd.DataFrame()
+
+        return result.data
+
+    except Exception as e:
+        print(f"异步请求发生异常 [{stock_code}]: {e}")
+        return pd.DataFrame()
+
+
+@cache_to_duckdb(db_name="stock_data_range.duckdb", debug=False)
+def get_stock_range_data(
+    stock_code: str, start_date: str, end_date: str
+) -> pd.DataFrame:
+    """
+    获取指定股票在 start_date 与 end_date  之中的1分钟细节数据
+
+    :param stock_code: 股票代码, 如 "603678.SH"
+    :param start_date: 开始日期, 格式为 "YYYY-MM-DD"
+    :param end_date: 结束日期, 格式为 "YYYY-MM-DD"
+    :return: 交易数据的 pandas DataFrame
+    """
+    # 构造查询的时间范围
+    start_time = f"{start_date} 09:15:00"
+    end_time = f"{end_date} 15:15:00"
+
+    # 定义需要的指标
+    indicators = "open;high;low;close;volume;avgPrice;turnoverRatio;changeRatio"
+    params = "CPS:forward1,Fill:Original"  # 前复权，保留原始值填充
+
+    # 调用高频序列接口
+    result = THS_HF(stock_code, indicators, params, start_time, end_time)
+    # print(colored(f"result:{result}", "light_yellow"))
+
+    if result.errorcode != 0:
+        print(f"数据获取失败，代码: {result.errorcode}, 信息: {result.errmsg}")
+        return pd.DataFrame()
+
+    # 返回 DataFrame 数据部分
+    return result.data
+
+
 async def test_single_and_multiple_stocks():
     target_date = "2023-12-22"
     stocks = ["603678.SH", "000001.SZ", "600519.SH"]
@@ -148,7 +212,14 @@ if __name__ == "__main__":
     # except Exception as e:
     #     print(f"程序运行出错: {e}")
 
-    try:
-        asyncio.run(test_single_and_multiple_stocks())
-    except KeyboardInterrupt:
-        pass
+    # try:
+    #     asyncio.run(test_single_and_multiple_stocks())
+    # except KeyboardInterrupt:
+    #     pass
+
+    start_date = "2016-01-11"
+    end_date = "2016-12-31"
+    code = "603678.SH"
+    file_path = "no_git_oic/test/00.csv"
+    df = get_stock_range_data(code, start_date, end_date)
+    df.to_csv(file_path, index=False, encoding="utf-8")

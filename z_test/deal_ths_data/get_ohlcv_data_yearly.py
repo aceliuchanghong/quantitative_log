@@ -125,7 +125,8 @@ if __name__ == "__main__":
     max_concurrent = 10
     trading_days = get_trading_days(start_date, end_date)
     date_list = trading_days.sort_values().strftime("%Y-%m-%d").tolist()
-    filtered_codes = aggregate_and_filter_codes(date_list)
+    # filtered_codes = aggregate_and_filter_codes(date_list)
+    filtered_codes = ["603678", "300726", "603267"]
     year_list = [year for year in range(2011, 2026)]
     # print(colored(f"{year_list}", "light_yellow"))
 
